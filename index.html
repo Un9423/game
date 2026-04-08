@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>台灣手語學習遊戲 - Web 版</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: #000;
+            color: #fff;
+            font-family: Arial, sans-serif;
+        }
+
+        #canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        #ui {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 10;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            align-items: flex-start;
+            text-align: left;
+            pointer-events: none;
+            font-size: 16px;
+            font-weight: 600;
+            max-width: 500px;
+        }
+
+        #ui-row {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            flex-wrap: wrap;
+            pointer-events: auto;
+        }
+
+        #ui p {
+            margin: 0;
+            pointer-events: auto;
+        }
+
+        #ui select {
+            pointer-events: auto;
+        }
+
+        .btn {
+            font-size: 16px;
+            padding: 8px 16px;
+            background: #00aa00;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            pointer-events: auto;
+            transition: background 0.2s;
+        }
+
+        .btn:hover {
+            background: #00dd00;
+        }
+
+        .btn-pause {
+            background: #ff6600;
+        }
+
+        .btn-pause:hover {
+            background: #ff9900;
+        }
+
+        #video {
+            position: absolute;
+            right: 10px;
+            top: 10px;
+            width: 320px;
+            height: 180px;
+            border: 2px solid #0f0;
+            z-index: 1;
+            opacity: 0;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="ui">
+        <div id="ui-row">
+            <select id="difficulty-select"
+                style="font-size: 14px; padding: 4px; background: #333; color: #fff; border: 1px solid #777; border-radius: 4px; outline: none; cursor: pointer;">
+                <option value="all">所有難度</option>
+                <option value="1">等級 1 (簡單)</option>
+                <option value="2">等級 2 (中等)</option>
+                <option value="3">等級 3 (困難)</option>
+            </select>
+            <button id="start-btn" class="btn" style="display:none;">
+                開始遊戲
+            </button>
+            <button id="pause-btn" class="btn btn-pause" style="display:none;">
+                暫停
+            </button>
+        </div>
+        <p id="status">狀態: 準備中</p>
+        <p id="score">房子數: 10</p>
+        <p id="life">已掉落: 0/15</p>
+        <p id="gesture">偵測: 無</p>
+        <p id="progress">進度: 等待手勢...</p>
+    </div>
+    <canvas id="canvas" width="600" height="800"></canvas>
+    <video id="video" autoplay playsinline muted></video>
+
+    <!-- ONNX Runtime Web -->
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
+
+    <!-- 138 維特徵提取 (從 features_holistic.py 轉換) -->
+    <script src="holistic_features.js"></script>
+
+    <!-- MediaPipe Tasks Vision (ES Module) + 主程式 -->
+    <script type="module" src="app.js"></script>
+</body>
+
+</html>
