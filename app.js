@@ -1,6 +1,17 @@
 // app.js: 台灣手語學習遊戲 Web 版
 // 使用 ONNX Transformer 模型進行手語辨識
 
+// 全局错误处理 - 防止页面当机
+window.addEventListener('error', (e) => {
+  console.error('Global error:', e.message, e.filename, e.lineno);
+  statusEl.textContent = `狀態: 錯誤 - ${e.message}`;
+});
+
+window.addEventListener('unhandledrejection', (e) => {
+  console.error('Unhandled promise rejection:', e.reason);
+  statusEl.textContent = `狀態: 異步錯誤 - ${e.reason}`;
+});
+
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 const statusEl = document.getElementById('status');
@@ -59,7 +70,7 @@ let labelMap = null;
 let predictionBuffer = [];
 const PREDICTION_BUFFER_SIZE = 5;   // 隊友規格：紀錄最近 5 次預測
 const STABLE_COUNT = 4;             // 隊友規格：5 次中至少 4 次一致
-const CONFIDENCE_THRESHOLD = 0.75;  // 隊友規格：原始 logit 門檻
+const CONFIDENCE_THRESHOLD = 0.75;  // 置信度門檻 (現在是 Softmax 機率)
 const MODEL_FRAMES = 30;
 const FEATURE_DIM = 138;
 let modelLoaded = false;
@@ -99,10 +110,16 @@ if (difficultySelect) {
 async function initModel() {
   try {
     statusEl.textContent = '狀態: 正在載入 AI 模型...';
-    ortSession = await ort.InferenceSession.create('./tsl_model.onnx');
-    const response = await fetch('./10_label_map.json');
+    console.log('Starting model load...');
+    const startTime = performance.now();
+    
+    ortSession = await ort.InferenceSession.create('./tsl_model.onnx?v=20260413');
+    const modelLoadTime = (performance.now() - startTime) / 1000;
+    console.log(`✓ ONNX model loaded in ${modelLoadTime.toFixed(2)}s`);
+    
+    const response = await fetch('./10_label_map.json?v=20260413');
     labelMap = await response.json();
-    console.log('ONNX model loaded', labelMap);
+    console.log('✓ Label map loaded', labelMap);
 
     fullVocabulary = Object.entries(labelMap).map(([idx, text]) => ({
       text,
@@ -166,17 +183,39 @@ class Plane {
     return null;
   }
   render(ctx) {
-    if (planeImg.complete && planeImg.naturalWidth > 0) {
-      const imgH = this.height;
-      const imgW = (planeImg.naturalWidth / planeImg.naturalHeight) * imgH;
-      const drawX = this.x + (this.width - imgW) / 2;
-      ctx.save();
-      if (this.direction === -1) { ctx.translate(drawX + imgW / 2, 0); ctx.scale(-1, 1); ctx.translate(-(drawX + imgW / 2), 0); }
-      ctx.drawImage(planeImg, drawX, this.y, imgW, imgH);
-      ctx.restore();
-    } else {
-      ctx.fillStyle = '#999';
-      ctx.fillRect(this.x, this.y, this.width, this.height);
+    try {
+      if (planeImg.complete && planeImg.naturalWidth > 0) {
+        const imgH = this.height;
+        const imgW = (planeImg.naturalWidth / planeImg.naturalHeight) * imgH;
+        const drawX = this.x + (this.width - imgW) / 2;
+        
+        // 防價：確保所有座標有效
+        if (isNaN(drawX) || isNaN(imgW) || isNaN(imgH)) {
+          console.warn('Plane render: 無效座標計算', {drawX, imgW, imgH});
+          return;
+        }
+        
+        ctx.save();
+        if (this.direction === -1) { 
+          ctx.translate(drawX + imgW / 2, 0); 
+          ctx.scale(-1, 1); 
+          ctx.translate(-(drawX + imgW / 2), 0); 
+        }
+        ctx.drawImage(planeImg, drawX, this.y, imgW, imgH);
+        ctx.restore();
+      } else {
+        ctx.fillStyle = '#999';
+        ctx.fillRect(this.x, this.y, this.width, this.height);
+      }
+    } catch (e) {
+      console.error('Plane render error:', e);
+      // 備用：畫一個簡單的矩形
+      try {
+        ctx.fillStyle = '#999';
+        ctx.fillRect(this.x, this.y, this.width, this.height);
+      } catch (e2) {
+        console.error('Plane fallback render error:', e2);
+      }
     }
   }
 }
@@ -220,15 +259,38 @@ class Bomb {
       this.explosionTimer += 1;
       const size = Bomb.WIDTH * 1.3;
       const ex = this.x + (Bomb.WIDTH - size) / 2, ey = this.y + (Bomb.HEIGHT - size) / 2;
-      if (explosionImg.complete && explosionImg.naturalWidth > 0) ctx.drawImage(explosionImg, ex, ey, size, size);
-      else { ctx.fillStyle = 'orange'; ctx.beginPath(); ctx.arc(this.x + Bomb.WIDTH / 2, this.y + Bomb.HEIGHT / 2, size / 2, 0, Math.PI * 2); ctx.fill(); }
+      
+      // 防價：確保所有座標都有效
+      if (isNaN(ex) || isNaN(ey) || isNaN(size)) {
+        console.warn('Bomb explosion: 無效座標', {ex, ey, size});
+        this.exploding = false; this.finished = true; return;
+      }
+      
+      try {
+        if (explosionImg.complete && explosionImg.naturalWidth > 0) ctx.drawImage(explosionImg, ex, ey, size, size);
+        else { ctx.fillStyle = 'orange'; ctx.beginPath(); ctx.arc(this.x + Bomb.WIDTH / 2, this.y + Bomb.HEIGHT / 2, size / 2, 0, Math.PI * 2); ctx.fill(); }
+      } catch (e) {
+        console.error('Bomb explosion draw error:', e);
+      }
+      
       if (this.explosionTimer >= 10) { this.exploding = false; this.finished = true; }
       return;
     }
-    if (bombImg.complete && bombImg.naturalWidth > 0) ctx.drawImage(bombImg, drawX, drawY, drawW, drawH);
-    else { ctx.fillStyle = '#CC0000'; ctx.fillRect(drawX, drawY, drawW, drawH); }
-    ctx.fillStyle = '#FFF'; ctx.font = '24px Arial'; ctx.textAlign = 'center';
-    ctx.fillText(this.word, this.x + Bomb.WIDTH / 2, this.y + Bomb.HEIGHT / 2 + 10);
+    
+    // 防價：確保炸彈座標有效
+    if (isNaN(drawX) || isNaN(drawY) || isNaN(drawW) || isNaN(drawH)) {
+      console.warn('Bomb render: 無效座標', {drawX, drawY, drawW, drawH});
+      return;
+    }
+    
+    try {
+      if (bombImg.complete && bombImg.naturalWidth > 0) ctx.drawImage(bombImg, drawX, drawY, drawW, drawH);
+      else { ctx.fillStyle = '#CC0000'; ctx.fillRect(drawX, drawY, drawW, drawH); }
+      ctx.fillStyle = '#FFF'; ctx.font = '24px Arial'; ctx.textAlign = 'center';
+      ctx.fillText(this.word, this.x + Bomb.WIDTH / 2, this.y + Bomb.HEIGHT / 2 + 10);
+    } catch (e) {
+      console.error('Bomb render draw error:', e);
+    }
   }
 }
 
@@ -261,57 +323,112 @@ function resetGestureSequence() {
 
 async function runInference() {
   if (!ortSession || isInferring || featureBuffer.length < MIN_FRAMES_FOR_INFERENCE) return null;
+  if (!labelMap) {
+    console.warn('runInference: labelMap 尚未加載');
+    return null;
+  }
+  
   isInferring = true;
   try {
     const inputData = prepareModelInput(featureBuffer, MODEL_FRAMES);
+    
+    // 防價：驗證輸入數據
+    if (!inputData || inputData.length === 0) {
+      console.warn('runInference: 無效的輸入數據');
+      isInferring = false;
+      return null;
+    }
+    
     const tensor = new ort.Tensor('float32', inputData, [1, MODEL_FRAMES, FEATURE_DIM]);
     const results = await ortSession.run({ input: tensor });
     const output = Array.from(results.output.data);
 
+    // 防價：檢查輸出長度
+    if (!output || output.length !== 10) {
+      console.warn('runInference: 無效的模型輸出', output);
+      isInferring = false;
+      return null;
+    }
+
+    // 計算 Softmax 以獲得真實信心度 (機率)
+    const expOut = output.map(x => Math.exp(x - Math.max(...output)));  // 減去max以防止溢出
+    const sumExp = expOut.reduce((a, b) => a + b, 0);
+    
+    // 防價：驗證 Softmax 計算
+    if (sumExp <= 0 || !isFinite(sumExp)) {
+      console.warn('runInference: Softmax 計算失敗，sumExp=', sumExp);
+      isInferring = false;
+      return null;
+    }
+    
+    const probabilities = expOut.map(x => {
+      const prob = x / sumExp;
+      // 確保機率是有效的數字 (0-1)
+      if (!isFinite(prob)) {
+        console.warn('runInference: 無限或 NaN 的機率值，設為0', {expOut: x, sumExp, prob});
+        return 0;
+      }
+      return Math.max(0, Math.min(1, prob));  // 夾到 [0, 1]
+    });
+
     // 取得當前難度允許的詞彙清單
     const activeWords = new Set(currentVocabulary.map(v => v.text));
 
-    // 建立 label index → word 對照，並遮蔽非當前難度的 logits
-    const maskedLogits = output.map((logit, i) => {
+    // 找最高機率（只在允許的類別中）
+    let maxProb = -1;  // 改用 -1 作為無效標記，而不是 -Infinity
+    let predIdx = -1;
+    for (let i = 0; i < probabilities.length; i++) {
       const word = labelMap[String(i)];
-      return activeWords.has(word) ? logit : -Infinity;
-    });
+      if (word && activeWords.has(word) && probabilities[i] > maxProb) {
+        maxProb = probabilities[i];
+        predIdx = i;
+      }
+    }
+    
+    const predLabel = (predIdx >= 0) ? labelMap[String(predIdx)] : null;
+    
+    // 防價：確保 maxProb 是有效數字
+    if (!isFinite(maxProb) || maxProb < 0) {
+      console.warn('runInference: 無效的最大機率', maxProb);
+      isInferring = false;
+      return null;
+    }
 
-    // 找最大 logit（只在允許的類別中）
-    const maxLogit = Math.max(...maskedLogits);
-    const predIdx = maskedLogits.indexOf(maxLogit);
-    const predLabel = labelMap[String(predIdx)];
-
-    // Debug: 記錄所有類別的原始 logits
+    // Debug: 記錄所有類別的機率
     const allPreds = [];
-    for (let i = 0; i < output.length; i++) {
+    for (let i = 0; i < probabilities.length; i++) {
       const word = labelMap[String(i)] || `?${i}`;
       const active = activeWords.has(word);
-      allPreds.push({ label: word, logit: output[i], active });
+      const prob = probabilities[i];
+      // 防價：確保 prob 是有效數字
+      if (!isFinite(prob)) {
+        console.warn(`runInference: 類別 ${i} 的機率無效:`, prob);
+        allPreds.push({ label: word, prob: 0, active });
+      } else {
+        allPreds.push({ label: word, prob: prob, active });
+      }
     }
-    allPreds.sort((a, b) => b.logit - a.logit);
+    allPreds.sort((a, b) => b.prob - a.prob);
+    
+    // 防價：在構建 lastDebugInfo 前驗證所有值
+    const top5Preds = allPreds.filter(p => p.active).slice(0, 5);
     lastDebugInfo = {
-      top5: allPreds.filter(p => p.active).slice(0, 5).map(p => ({
-        label: p.label, prob: p.logit
+      top5: top5Preds.map(p => ({
+        label: p.label, 
+        prob: p.prob  // 保留原始數字，不要轉換為字符串
       })),
       bufferLen: featureBuffer.length,
-      rawLogits: output.map(x => x.toFixed(2)),
+      rawProbs: probabilities,  // 保留原始機率陣列，不要轉換為字符串
     };
     const topActive = allPreds.filter(p => p.active).slice(0, 3);
-    console.log(`[推論] 緩衝=${featureBuffer.length}幀 | Top(該難度): ${topActive.map(p => `${p.label}(${p.logit.toFixed(2)})`).join(', ')}`);
-    
-    // 診斷: 所有logits都很低时的警告
-    const maxLogitAll = Math.max(...output);
-    if (maxLogitAll < 0.1) {
-      console.warn('[警告] 所有logits都很低 (<0.1)，检查:', {
-        buffer帧数: featureBuffer.length,
-        所有logits: output.map(x => x.toFixed(4)).join(','),
-      });
-    }
+    const topStr = topActive.map(p => {
+      const prob = isFinite(p.prob * 100) ? (p.prob * 100).toFixed(1) : '無效';
+      return `${p.label}(${prob}%)`;
+    }).join(', ');
+    console.log(`[推論] 緩衝=${featureBuffer.length}幀 | Top(該難度): ${topStr}`);
 
     isInferring = false;
-    // 使用原始 logit 值（不做 softmax），跟隊友的 checkGesture 一致
-    return { label: predLabel, confidence: maxLogit };
+    return predLabel ? { label: predLabel, confidence: maxProb } : null;
   } catch (e) {
     console.error('Inference error:', e);
     isInferring = false;
@@ -320,12 +437,18 @@ async function runInference() {
 }
 
 function processInferenceResult(result) {
-  if (!result) return;
-  if (gestureEl) gestureEl.textContent = `偵測: ${result.label} (logit: ${result.confidence.toFixed(2)})`;
+  if (!result || !isFinite(result.confidence)) {
+    console.warn('processInferenceResult: 無效的結果', result);
+    return;
+  }
+  
+  const confidencePercent = isFinite(result.confidence * 100) ? (result.confidence * 100).toFixed(1) : '無效';
+  if (gestureEl) gestureEl.textContent = `偵測: ${result.label} (${confidencePercent}%)`;
 
-  // 原始 logit 門檻 0.75（跟隊友的 checkGesture 一致）
+  // Softmax 機率門檻 0.75
   if (result.confidence < CONFIDENCE_THRESHOLD) {
-    console.log(`[過濾] ${result.label} logit=${result.confidence.toFixed(2)} < 門檻 ${CONFIDENCE_THRESHOLD}`);
+    const thresholdPercent = (CONFIDENCE_THRESHOLD * 100).toFixed(0);
+    console.log(`[過濾] ${result.label} 機率=${confidencePercent}% < 門檻 ${thresholdPercent}%`);
     return;
   }
 
@@ -380,19 +503,6 @@ function updateDynamicGesture(results) {
   handMissFrameCount = 0;  // 重置缺失計數
   handWasPresent = true;
   const frame = extractFrame138(results);
-  
-  // 诊断：检查特征是否全为0或其他异常值
-  const nonZeroCount = frame.filter(v => Math.abs(v) > 1e-6).length;
-  if (featureBuffer.length === 0 && nonZeroCount < 10) {
-    console.warn('[特征提取] 非零值过少:', nonZeroCount, '个，特征可能有问题');
-    console.log('[特征样本]', {
-      leftHand: frame.slice(0, 9).map(x => x.toFixed(3)).join(','),
-      rightHand: frame.slice(63, 72).map(x => x.toFixed(3)).join(','),
-      global: frame.slice(126, 138).map(x => x.toFixed(3)).join(','),
-      诊断信息: typeof lastFeatureDiag !== 'undefined' ? lastFeatureDiag : '无',
-    });
-  }
-  
   featureBuffer.push(frame);
   if (featureBuffer.length > FEATURE_BUFFER_MAX) featureBuffer.shift();
   if (progressEl) progressEl.textContent = `進度: 錄製動作 (${featureBuffer.length}/${FEATURE_BUFFER_MAX})`;
@@ -471,21 +581,26 @@ function renderCamera() {
   const camMaxW = 320;  // 回復為 320 像素
   const camMaxH = 180;
   let camW = camMaxW;
-  let camH = camW / camVideoAspect;
+  let camH = camW / (camVideoAspect || 1.78);  // 防止除以0或undefined
   if (camH > camMaxH) {
     camH = camMaxH;
-    camW = camH * camVideoAspect;
+    camW = camH * (camVideoAspect || 1.78);
   }
   // 放在右上角
   const camX = WIDTH - camW - 10, camY = 10;
 
   // 鏡像繪製攝影機畫面
   if (lastVideoFrame) {
-    ctx.save();
-    ctx.translate(camX + camW, camY);
-    ctx.scale(-1, 1);
-    ctx.drawImage(lastVideoFrame, 0, 0, camW, camH);
-    ctx.restore();
+    try {
+      ctx.save();
+      ctx.translate(camX + camW, camY);
+      ctx.scale(-1, 1);
+      ctx.drawImage(lastVideoFrame, 0, 0, camW, camH);
+      ctx.restore();
+    } catch (e) {
+      console.error('Camera render error:', e);
+      ctx.restore();
+    }
   }
 
   // 綠色邊框
@@ -498,11 +613,23 @@ function renderCamera() {
     ctx.fillStyle = '#0f0';
     for (const hand of lastHandLandmarks) {
       for (const lm of hand) {
+        // 驗證坐標有效性，防止NaN導致當機
+        if (!lm || typeof lm.x !== 'number' || typeof lm.y !== 'number') continue;
+        if (isNaN(lm.x) || isNaN(lm.y) || isNaN(camW) || isNaN(camH)) continue;
+        
         const x = camX + (1 - lm.x) * camW;
         const y = camY + lm.y * camH;
-        ctx.beginPath();
-        ctx.arc(x, y, 4, 0, Math.PI * 2);
-        ctx.fill();
+        
+        // 再次驗證計算結果
+        if (isNaN(x) || isNaN(y)) continue;
+        
+        try {
+          ctx.beginPath();
+          ctx.arc(x, y, 4, 0, Math.PI * 2);
+          ctx.fill();
+        } catch (e) {
+          console.error('Hand landmark render error:', e);
+        }
       }
     }
   }
@@ -561,16 +688,27 @@ function renderDebugOverlay() {
     ctx.fillText(`=== 預測 (門檻${CONFIDENCE_THRESHOLD}) ===`, x + 8, ly);
     lastDebugInfo.top5.slice(0, 3).forEach((p, i) => {
       ly += 16;
-      const barW = Math.max(0, (p.prob + 3) * 20);
-      ctx.fillStyle = (i === 0 && p.prob >= CONFIDENCE_THRESHOLD) ? '#0f0' : '#555';
-      ctx.fillRect(x + 140, ly - 12, barW, 12);
+      // 防價：確保 p.prob 是有效的數字
+      let probValue = p.prob;
+      let probDisplay = '無效';
+      if (isFinite(probValue)) {
+        const barW = Math.max(0, (probValue * 100 + 3) * 0.2);
+        ctx.fillStyle = (i === 0 && probValue >= CONFIDENCE_THRESHOLD) ? '#0f0' : '#555';
+        ctx.fillRect(x + 140, ly - 12, barW, 12);
+        probDisplay = (probValue * 100).toFixed(1) + '%';
+      }
       ctx.fillStyle = '#fff';
-      ctx.fillText(`${p.label}: ${p.prob.toFixed(1)}`, x + 8, ly);
+      ctx.fillText(`${p.label}: ${probDisplay}`, x + 8, ly);
     });
     ly += 12;
     ctx.fillStyle = '#666';
     ctx.font = '10px monospace';
-    ctx.fillText(`logits: ${lastDebugInfo.rawLogits.join(',')}`, x + 8, ly);
+    // logits 資訊（改為顯示原始機率）
+    const rawProbsStr = lastDebugInfo.rawProbs.slice(0, 3).map((x, i) => {
+      if (isFinite(x)) return (x * 100).toFixed(1) + '%';
+      return 'NaN';
+    }).join(', ');
+    ctx.fillText(`raw probs: ${rawProbsStr}`, x + 8, ly);
   } else {
     ctx.fillStyle = '#888';
     ctx.fillText('尚未進行推論', x + 8, ly);
@@ -581,15 +719,16 @@ function renderDebugOverlay() {
 // 主迴圈
 // -----------------------
 function gameLoop() {
-  // 继续计数手部被检测到的时间，确保每帧都更新（即使 predictWebcam 延迟）
-  if (handMissFrameCount > 0) {
-    handMissFrameCount++;
-    if (handMissFrameCount > HAND_PERSISTENCE_FRAMES) {
-      lastHandLandmarks = null;
+  try {
+    // 继续计数手部被检测到的时间，确保每帧都更新（即使 predictWebcam 延迟）
+    if (handMissFrameCount > 0) {
+      handMissFrameCount++;
+      if (handMissFrameCount > HAND_PERSISTENCE_FRAMES) {
+        lastHandLandmarks = null;
+      }
     }
-  }
 
-  ctx.clearRect(0, 0, WIDTH, HEIGHT);
+    ctx.clearRect(0, 0, WIDTH, HEIGHT);
 
   if (!gameStarted) {
     if (backgroundImg.complete && backgroundImg.naturalWidth > 0) ctx.drawImage(backgroundImg, 0, 0, WIDTH, HEIGHT);
@@ -634,8 +773,18 @@ function gameLoop() {
 
   // 房子
   for (const h of houses) {
-    if (houseImg.complete && houseImg.naturalWidth > 0) ctx.drawImage(houseImg, h.x, h.y, h.width, h.height);
-    else { ctx.fillStyle = '#ffaa00'; ctx.fillRect(h.x, h.y, h.width, h.height); }
+    // 防價：確保房子座標有效
+    if (isNaN(h.x) || isNaN(h.y) || isNaN(h.width) || isNaN(h.height)) {
+      console.warn('House render: 無效座標', {x: h.x, y: h.y, width: h.width, height: h.height});
+      continue;
+    }
+    
+    try {
+      if (houseImg.complete && houseImg.naturalWidth > 0) ctx.drawImage(houseImg, h.x, h.y, h.width, h.height);
+      else { ctx.fillStyle = '#ffaa00'; ctx.fillRect(h.x, h.y, h.width, h.height); }
+    } catch (e) {
+      console.error('House render error:', e);
+    }
   }
 
   // 炸彈
@@ -700,6 +849,11 @@ function gameLoop() {
   renderDebugOverlay();
   updateHud();
   requestAnimationFrame(gameLoop);
+  } catch (e) {
+    console.error('Game loop error:', e);
+    statusEl.textContent = `狀態: 遊戲循環錯誤 - ${e.message}`;
+    requestAnimationFrame(gameLoop);  // 繼續运行，防止停止
+  }
 }
 
 // -----------------------
@@ -802,20 +956,6 @@ async function predictWebcam() {
       leftHandLandmarks: leftHandLandmarks,
       rightHandLandmarks: rightHandLandmarks,
     };
-    
-    // 诊断：检查HandLandmarker返回的数据格式
-    if (results.landmarks && results.landmarks.length > 0) {
-      const sampleLm = results.landmarks[0];
-      if (sampleLm && sampleLm.length > 0) {
-        const firstPoint = sampleLm[0];
-        if (typeof firstPoint.x !== 'number' || typeof firstPoint.y !== 'number') {
-          console.warn('[警告] HandLandmarker格式异常:', {
-            firstPoint: firstPoint,
-            keys: Object.keys(firstPoint),
-          });
-        }
-      }
-    }
 
     const handList = [];
     if (formattedResults.leftHandLandmarks) handList.push(formattedResults.leftHandLandmarks);
