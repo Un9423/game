@@ -60,7 +60,7 @@ let predictionBuffer = [];
 const PREDICTION_BUFFER_SIZE = 5;   // 隊友規格：紀錄最近 5 次預測
 const STABLE_COUNT = 4;             // 隊友規格：5 次中至少 4 次一致
 const CONFIDENCE_THRESHOLD = 0.75;  // 隊友規格：原始 logit 門檻
-const MODEL_FRAMES = 90;
+const MODEL_FRAMES = 30;
 const FEATURE_DIM = 138;
 let modelLoaded = false;
 
@@ -241,7 +241,7 @@ let handMissFrameCount = 0;  // 計數連續缺失的幀數
 const HAND_PERSISTENCE_FRAMES = 30;  // 手部節點持續顯示 30 幀（約 0.5 秒）後才清除
 
 let featureBuffer = [];
-const FEATURE_BUFFER_MAX = 90;
+const FEATURE_BUFFER_MAX = 30;
 const MIN_FRAMES_FOR_INFERENCE = 30;
 let inferenceCooldown = 0;
 let isInferring = false;
@@ -299,6 +299,15 @@ async function runInference() {
     };
     const topActive = allPreds.filter(p => p.active).slice(0, 3);
     console.log(`[推論] 緩衝=${featureBuffer.length}幀 | Top(該難度): ${topActive.map(p => `${p.label}(${p.logit.toFixed(2)})`).join(', ')}`);
+    
+    // 診斷: 所有logits都很低时的警告
+    const maxLogitAll = Math.max(...output);
+    if (maxLogitAll < 0.1) {
+      console.warn('[警告] 所有logits都很低 (<0.1)，检查:', {
+        buffer帧数: featureBuffer.length,
+        所有logits: output.map(x => x.toFixed(4)).join(','),
+      });
+    }
 
     isInferring = false;
     // 使用原始 logit 值（不做 softmax），跟隊友的 checkGesture 一致
@@ -371,6 +380,19 @@ function updateDynamicGesture(results) {
   handMissFrameCount = 0;  // 重置缺失計數
   handWasPresent = true;
   const frame = extractFrame138(results);
+  
+  // 诊断：检查特征是否全为0或其他异常值
+  const nonZeroCount = frame.filter(v => Math.abs(v) > 1e-6).length;
+  if (featureBuffer.length === 0 && nonZeroCount < 10) {
+    console.warn('[特征提取] 非零值过少:', nonZeroCount, '个，特征可能有问题');
+    console.log('[特征样本]', {
+      leftHand: frame.slice(0, 9).map(x => x.toFixed(3)).join(','),
+      rightHand: frame.slice(63, 72).map(x => x.toFixed(3)).join(','),
+      global: frame.slice(126, 138).map(x => x.toFixed(3)).join(','),
+      诊断信息: typeof lastFeatureDiag !== 'undefined' ? lastFeatureDiag : '无',
+    });
+  }
+  
   featureBuffer.push(frame);
   if (featureBuffer.length > FEATURE_BUFFER_MAX) featureBuffer.shift();
   if (progressEl) progressEl.textContent = `進度: 錄製動作 (${featureBuffer.length}/${FEATURE_BUFFER_MAX})`;
@@ -627,16 +649,33 @@ function gameLoop() {
       for (const h of houses) {
         if (b.x < h.x + h.width && b.x + Bomb.WIDTH > h.x && b.y < h.y + h.height && bombBottom > h.y) { hitAnyHouse = true; break; }
       }
-      if (!b.impactResolved && !b.shrinking && !b.exploding && (hitAnyHouse || bombBottom >= HEIGHT)) {
-        b.impactResolved = true;  // 標記已接觸，開始爆炸動畫
+      // 只有碰到地面才爆炸，忽略房子碰撞
+      const hitGround = bombBottom >= HEIGHT;
+      if (!b.impactResolved && !b.shrinking && !b.exploding && hitGround) {
+        b.impactResolved = true;  // 標記已接觸
         b.shouldExplode = true;
         b.startShrink(true);  // 開始爆炸縮小動畫
       }
-      // 爆炸動畫完成後再消除房子
+      // 爆炸動畫完成後再消除最近的房子
       if (b.finished && b.shouldExplode && !b.houseDamageApplied) {
         b.houseDamageApplied = true;
         if (houses.length > 0) {
-          houses.splice(Math.floor(Math.random() * houses.length), 1);
+          // 找到距離炸弹爆炸點最近的房子
+          let closestIdx = 0;
+          let closestDist = Infinity;
+          const bombCenterX = b.x + Bomb.WIDTH / 2;
+          const bombCenterY = b.y + Bomb.HEIGHT / 2;
+          for (let i = 0; i < houses.length; i++) {
+            const h = houses[i];
+            const houseCenterX = h.x + h.width / 2;
+            const houseCenterY = h.y + h.height / 2;
+            const dist = Math.hypot(houseCenterX - bombCenterX, houseCenterY - bombCenterY);
+            if (dist < closestDist) {
+              closestDist = dist;
+              closestIdx = i;
+            }
+          }
+          houses.splice(closestIdx, 1);
           if (houses.length === 0) { gameOver = true; win = false; }
         }
       }
@@ -763,6 +802,20 @@ async function predictWebcam() {
       leftHandLandmarks: leftHandLandmarks,
       rightHandLandmarks: rightHandLandmarks,
     };
+    
+    // 诊断：检查HandLandmarker返回的数据格式
+    if (results.landmarks && results.landmarks.length > 0) {
+      const sampleLm = results.landmarks[0];
+      if (sampleLm && sampleLm.length > 0) {
+        const firstPoint = sampleLm[0];
+        if (typeof firstPoint.x !== 'number' || typeof firstPoint.y !== 'number') {
+          console.warn('[警告] HandLandmarker格式异常:', {
+            firstPoint: firstPoint,
+            keys: Object.keys(firstPoint),
+          });
+        }
+      }
+    }
 
     const handList = [];
     if (formattedResults.leftHandLandmarks) handList.push(formattedResults.leftHandLandmarks);
