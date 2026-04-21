@@ -18,6 +18,7 @@
             display: block;
             width: 100vw;
             height: 100vh;
+            z-index: 0;
         }
 
         #ui {
@@ -70,6 +71,16 @@
             background: #00dd00;
         }
 
+        .btn:disabled {
+            background: #666666;
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+
+        .btn:disabled:hover {
+            background: #666666;
+        }
+
         .btn-pause {
             background: #ff6600;
         }
@@ -85,8 +96,9 @@
             width: 320px;
             height: 180px;
             border: 2px solid #0f0;
-            z-index: 1;
-            opacity: 0;
+            z-index: 100;
+            opacity: 1;
+            display: block;
         }
     </style>
 </head>
@@ -108,6 +120,14 @@
                 暫停
             </button>
         </div>
+
+        <div style="pointer-events: auto; background: rgba(0,0,0,0.5); padding: 8px; border-radius: 4px; border: 1px dashed #0f0; width: 250px; box-sizing: border-box; margin-top: 5px;">
+            <label for="audioUpload" style="font-size: 14px; font-weight: bold; cursor: pointer; color: #0f0; display: block; margin-bottom: 4px;">
+                🎵 點此上傳音樂
+            </label>
+            <input type="file" id="audioUpload" accept="audio/mp3, audio/wav, audio/ogg" style="width: 100%; font-size: 12px; color: #fff;">
+            <audio id="bgmPlayer" style="display: none;"></audio>
+        </div>
         <p id="status">狀態: 準備中</p>
         <p id="score">房子數: 10</p>
         <p id="life">已掉落: 0/15</p>
@@ -124,7 +144,20 @@
     <script src="holistic_features.js?v=20260413"></script>
 
     <!-- MediaPipe Tasks Vision (ES Module) + 主程式 -->
-    <script type="module" src="app.js?v=20260413"></script>
+    <script type="module" src="app.js?v=999999"></script>
+
+    <div id="leaderboard-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 9999; justify-content: center; align-items: center; flex-direction: column;">
+    <div style="background: #111; padding: 30px; border-radius: 15px; border: 3px solid #0f0; width: 85%; max-width: 400px; text-align: center; color: white; box-shadow: 0 0 20px rgba(0,255,0,0.5);">
+        <h2 style="color: #0f0; margin-top: 0; font-size: 28px;">🌍 全球排行榜 🌍</h2>
+        
+        <ul id="leaderboard-list" style="list-style: none; padding: 0; margin: 20px 0; max-height: 300px; overflow-y: auto;">
+            </ul>
+        
+        <button id="close-leaderboard-btn" style="padding: 12px 24px; font-size: 18px; cursor: pointer; background: #0f0; color: #000; border: none; border-radius: 8px; font-weight: bold; width: 100%;">
+            關閉並重新開始
+        </button>
+    </div>
+</div>
 </body>
 
 </html>
