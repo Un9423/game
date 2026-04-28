@@ -567,25 +567,39 @@ function randomVocab() {
 class Plane {
   constructor() {
     this.width = 120; this.height = 50;
-    this.x = 0; this.y = 50;
-    this.targetX = 0;//0420🌟 新增：飛機心裡想著的目標位置
-    this.speed = 3; this.direction = 1;
+    this.x = WIDTH / 2; this.y = 50;  // 初始位置在中央
+    this.speed = 2.5; // 🌟 等速飛行速度（像素/幀）
+    this.direction = 1;  // 1 = 向右, -1 = 向左
     this.dropCooldown = 150;
   }
   //---------------------------------------------------------------------------------------------------
   //---------------------------------------------------
-  //改成平滑飛行版
+  // 🌟 【改進】等速直線飛行 + 邊界折返（遇到攝像頭框折返）
   move() {
-    // 🌟 核心魔法：線性插值 (Lerp) 平滑移動
-    // 飛機會每一幀朝著目標拉近距離。0.1 是「滑順係數」，數字越小越滑順，數字越大越敏捷。
-    this.x += (this.targetX - this.x) * 0.1;
+    // 等速移動
+    this.x += this.speed * this.direction;
 
-    // 🌟 附加優化：自動轉頭
-    // 判斷目標在左邊還右邊，自動把飛機的圖片方向轉過去
-    if (this.targetX > this.x + 5) {
-        this.direction = 1;  // 朝右
-    } else if (this.targetX < this.x - 5) {
-        this.direction = -1; // 朝左
+    // 計算攝像頭框的邊界（與 renderCamera 一致）
+    const camMaxW = 320;
+    const camMaxH = 180;
+    let camW = camMaxW;
+    let camH = camW / 16 * 9;  // 16:9 比例
+    if (camH > camMaxH) {
+      camH = camMaxH;
+      camW = camH * 16 / 9;
+    }
+    const camX = WIDTH - camW - 10;  // 攝像頭在右上角
+    
+    // 邊界檢測，遇到邊緣折返
+    const leftBound = 0;
+    const rightBound = camX - 10;  // 遇到攝像頭框的左邊就折返
+    
+    if (this.x <= leftBound) {
+      this.x = leftBound;
+      this.direction = 1;  // 轉向右邊
+    } else if (this.x + this.width >= rightBound) {
+      this.x = rightBound - this.width;
+      this.direction = -1;  // 轉向左邊
     }
   }
   //---------------------------------------------------
@@ -1181,19 +1195,7 @@ function gameLoop() {
   if (!gameOver && !gamePaused) {
     plane.move();
 
-    //-------------------------------------------------------------------------------------------------0420
-    //-------------------------------------------------------
-    // 🌟 新增：讓飛機「預知未來」，提早朝著下一個炸彈的跑道飛過去
-    if (currentBeatIndex < musicBeats.length) {
-        let nextBeat = musicBeats[currentBeatIndex];
-        let usableWidth = WIDTH - 320; 
-        let nextLaneX = (usableWidth / 3) * nextBeat.lane + (usableWidth / 6) - (Bomb.WIDTH / 2);
-        
-        // 告訴飛機下一個目的地在哪
-        plane.targetX = nextLaneX; 
-    }
-    //--------------------------------------------------------
-    //--------------------------------------------------------------------------------------------------0420
+
     // ****************************************************************************
     // ***************************************
     // 【音樂對拍系統：未來視精準掉落邏輯】
@@ -1207,15 +1209,15 @@ function gameLoop() {
 
     // 只要時間到了，就把對應的炸彈全部生出來
     while (currentBeatIndex < musicBeats.length && lookAheadTime >= musicBeats[currentBeatIndex].time) {
-        let targetLane = musicBeats[currentBeatIndex].lane;
-        let usableWidth = WIDTH - 320; 
-        let laneX = (usableWidth / 3) * targetLane + (usableWidth / 6) - (Bomb.WIDTH / 2);
-        
         let targetTime = musicBeats[currentBeatIndex].time;
         let spawnTime = targetTime - travelTime;
         
-        // 生成炸彈 (給它純粹的 baseY)
-        bombs.push(new Bomb(laneX, baseY, targetTime, spawnTime)); 
+        // 🌟 【改進】炸彈直接在飛機當前位置下方落下
+        // 使用飛機的實時x位置，而不是預計算的lane位置
+        let bombX = plane.x + (plane.width - Bomb.WIDTH) / 2;  // 讓炸彈在飛機正下方
+        
+        // 生成炸彈
+        bombs.push(new Bomb(bombX, baseY, targetTime, spawnTime)); 
         
         totalBombsDropped += 1;
         currentBeatIndex += 1; 
