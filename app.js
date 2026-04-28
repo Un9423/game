@@ -310,17 +310,31 @@ const PREDICTION_BUFFER_SIZE = 5;   // 隊友規格：紀錄最近 5 次預測
 const STABLE_COUNT = 4;             // 隊友規格：5 次中至少 4 次一致
 const CONFIDENCE_THRESHOLD = 0.75;  // 隊友規格：原始 logit 門檻
 const MODEL_FRAMES = 30;
-const FEATURE_DIM = 138;
+const FEATURE_DIM = 66;             // 新模型：66 維 (左手33 + 右手33)
 let modelLoaded = false;
 
 // Debug: 儲存最近一次推論的完整結果供畫面顯示
 let lastDebugInfo = null;
 
-// 詞彙難度對照表（可自由調整）
+// 詞彙難度對照表 - 三級制 (根據 gesture_difficulty_classification.md)
+// 一級(1): 簡單, 二級(2): 中級, 三級(3): 高級
 const WORD_DIFFICULTY = {
-  '棒': 1, '謝謝': 1, '高興': 1, '喜歡': 1,
-  '名字': 2, '對不起': 2, '生氣': 2, '沒關係': 2,
-  '不客氣': 3, '飛機': 3,
+  // ⭐ 一級（初級） - 14個
+  '你好': 1, '再見': 1, '謝謝': 1, '對不起': 1, '沒關係': 1,
+  '可以': 1, '不可以': 1, '我': 1, '媽媽': 1, '爸爸': 1,
+  '朋友': 1, '棒': 1, '高興': 1, '生氣': 1,
+  
+  // ⭐⭐ 二級（中級） - 18個
+  '喜歡': 2, '不喜歡': 2, '要': 2, '去': 2, '找': 2,
+  '休息': 2, '公車': 2, '火車': 2, '飛機': 2, '機車': 2,
+  '計程車': 2, '飲料': 2, '好吃': 2, '蘋果': 2, '檢查': 2,
+  '幫忙': 2, '認真': 2, '高鐵': 2,
+  
+  // ⭐⭐⭐ 三級（高級） - 18個
+  '不是': 3, '是': 3, '會': 3, '有': 3, '有沒有': 3,
+  '我們': 3, '中午': 3, '今天(現在)': 3, '明天': 3, '放學': 3,
+  '幾點': 3, '忘記': 3, '記得': 3, '還沒': 3, '名字': 3,
+  '告訴': 3, '說話': 3, '不客氣': 3,
 };
 
 let fullVocabulary = [];
@@ -348,10 +362,29 @@ if (difficultySelect) {
 async function initModel() {
   try {
     statusEl.textContent = '狀態: 正在載入 AI 模型...';
-    ortSession = await ort.InferenceSession.create('./tsl_model.onnx');
+    console.log('🔄 開始加載 ONNX 模型...');
+    
+    // 配置 ONNX Runtime Wasm 環境
+    if (typeof ort !== 'undefined' && ort.env) {
+      console.log('🔧 設定 ONNX Runtime 環境...');
+      // 設置 WASM 路徑以正確加載外部數據文件
+      ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/';
+      ort.env.wasm.numThreads = 1;
+    }
+    
+    console.log('🔄 創建推理會話...');
+    // 只使用 wasm backend，禁用其他可能會失敗的 backend
+    const options = {
+      executionProviders: ['wasm'],
+      graphOptimizationLevel: 'all'
+    };
+    
+    ortSession = await ort.InferenceSession.create('./tsl_model.onnx', options);
+    console.log('✅ 推理會話創建成功');
+    
     const response = await fetch('./10_label_map.json');
     labelMap = await response.json();
-    console.log('ONNX model loaded', labelMap);
+    console.log('✅ ONNX model loaded', labelMap);
 
     fullVocabulary = Object.entries(labelMap).map(([idx, text]) => ({
       text,
@@ -377,42 +410,62 @@ async function initModel() {
 // -----------------------
 /**
  * 計算單幀的能量值（以手部重心的標準差）
- * @param {Float32Array} frame - 138 維特徵向量
+ * 支援 66 維特徵（新模型）和 138 維特徵（舊模型）
+ * @param {Float32Array} frame - 特徵向量 (66 或 138 維)
  * @returns {number} 能量值
  */
 function computeFrameEnergy(frame) {
-  if (!frame || frame.length < 126) return 0;
+  if (!frame) return 0;
   
-  // 左手：[0:63] (21 點 × 3 維)
-  let lh_pts = [];
-  for (let i = 0; i < 21; i++) {
-    lh_pts.push([frame[i*3], frame[i*3+1], frame[i*3+2]]);
+  let lh_pts, rh_pts;
+  
+  // 判斷是 66 維還是 138 維
+  if (frame.length === 66) {
+    // 新模型：66 維 (左手 33 + 右手 33)，只有 11 個關鍵點
+    lh_pts = [];
+    for (let i = 0; i < 11; i++) {
+      lh_pts.push([frame[i*3], frame[i*3+1], frame[i*3+2]]);
+    }
+    
+    rh_pts = [];
+    for (let i = 0; i < 11; i++) {
+      rh_pts.push([frame[33 + i*3], frame[33 + i*3+1], frame[33 + i*3+2]]);
+    }
+  } else if (frame.length >= 126) {
+    // 舊模型：138 維 (左手 63 + 右手 63)，21 個點
+    lh_pts = [];
+    for (let i = 0; i < 21; i++) {
+      lh_pts.push([frame[i*3], frame[i*3+1], frame[i*3+2]]);
+    }
+    
+    rh_pts = [];
+    for (let i = 0; i < 21; i++) {
+      rh_pts.push([frame[63 + i*3], frame[63 + i*3+1], frame[63 + i*3+2]]);
+    }
+  } else {
+    return 0;
   }
   
-  // 右手：[63:126] (21 點 × 3 維)
-  let rh_pts = [];
-  for (let i = 0; i < 21; i++) {
-    rh_pts.push([frame[63 + i*3], frame[63 + i*3+1], frame[63 + i*3+2]]);
-  }
-  
-  // 計算兩手重心 (3D 坐標)
+  // 計算兩手重心
   let lh_center = [0, 0, 0];
   let rh_center = [0, 0, 0];
+  const pointCount = lh_pts.length;
+  
   for (let i = 0; i < 3; i++) {
     for (let p of lh_pts) lh_center[i] += p[i];
     for (let p of rh_pts) rh_center[i] += p[i];
-    lh_center[i] /= 21;
-    rh_center[i] /= 21;
+    lh_center[i] /= pointCount;
+    rh_center[i] /= pointCount;
   }
   
-  // 計算離散度 (標準差)
+  // 計算標準差 (能量)
   let lh_var = [0, 0, 0];
   let rh_var = [0, 0, 0];
   for (let i = 0; i < 3; i++) {
     for (let p of lh_pts) lh_var[i] += (p[i] - lh_center[i]) ** 2;
     for (let p of rh_pts) rh_var[i] += (p[i] - rh_center[i]) ** 2;
-    lh_var[i] = Math.sqrt(lh_var[i] / 21);
-    rh_var[i] = Math.sqrt(rh_var[i] / 21);
+    lh_var[i] = Math.sqrt(lh_var[i] / pointCount);
+    rh_var[i] = Math.sqrt(rh_var[i] / pointCount);
   }
   
   // 返回能量 = 三軸標準差平均
@@ -795,8 +848,9 @@ function updateDynamicGesture(results) {
   handMissFrameCount = 0;  // 重置缺失計數
   handWasPresent = true;
   
-  if (typeof extractFrame138 === 'function') {
-      const frame = extractFrame138(results);
+  // 改為使用新的 66 維特徵提取
+  if (typeof extractFrame66 === 'function') {
+      const frame = extractFrame66(results);
       
       // 诊断：检查特征是否全为0或其他异常值
       const nonZeroCount = frame.filter(v => Math.abs(v) > 1e-6).length;
