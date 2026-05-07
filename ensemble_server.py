@@ -55,15 +55,20 @@ class CNNTransformerTSL(nn.Module):
         )
 
     def forward(self, x):
-        # x: [B, T, D] -> [B, D, T]
-        x = x.permute(0, 2, 1)
-        x = self.cnn(x)  # [B, hidden_dim, T]
-        x = x.permute(0, 2, 1)  # [B, T, hidden_dim]
-        x = x + self.pos_encoder
-        x = self.transformer(x)  # [B, T, hidden_dim]
-        x = x.mean(dim=1)  # global average pooling
-        x = self.fc(x)  # [B, num_classes]
-        return x
+        # CNN: (Batch, Frames, Dim) -> (Batch, Dim, Frames)
+        x = self.cnn(x.transpose(1, 2)).transpose(1, 2)
+        
+        # 加入 Positional Encoding
+        if x.size(1) <= self.pos_encoder.size(1):
+            x = x + self.pos_encoder[:, :x.size(1), :]
+        
+        # Transformer: (Batch, Frames, hidden_dim)
+        x = self.transformer(x)
+        
+        # 結合 Mean 與 Max Pooling
+        avg_pool = x.mean(dim=1)
+        max_pool, _ = x.max(dim=1)
+        return self.fc(avg_pool + max_pool)
 
 # ============================================
 # 2. 初始化 Flask 應用
@@ -81,13 +86,11 @@ OUTPUT_DIR = "train_V21_Transformer_66(with asl weight + new video + sliding win
 
 # 標籤映射和超參數優先從根目錄讀取
 LABEL_MAP_PATH = "label_map.json"  # 項目根目錄
-BEST_PARAMS_PATH = "10_best_params.json"  # 或從訓練文件夾讀取
+BEST_PARAMS_PATH = "best_params.json"  # 或從訓練文件夾讀取
 
 # 如果根目錄沒有，退而求其次從訓練文件夾讀取
 if not os.path.exists(LABEL_MAP_PATH):
     LABEL_MAP_PATH = os.path.join(OUTPUT_DIR, "label_map.json")
-if not os.path.exists(BEST_PARAMS_PATH):
-    BEST_PARAMS_PATH = os.path.join(OUTPUT_DIR, "best_params.json")
 
 # 讀取超參數
 with open(BEST_PARAMS_PATH, 'r', encoding='utf-8') as f:
