@@ -103,8 +103,9 @@ const statusEl = document.getElementById('status');
 const scoreEl = document.getElementById('score');
 const lifeEl = document.getElementById('life');
 const video = document.getElementById('video');
-// 🎥 隱藏 video 元素，因為我們用 Canvas 渲染視頻（在 renderCamera() 中）
-video.style.display = 'none';
+// 🎥 保留 video 元素的原始 CSS 让其正常初始化摄像头流
+// video 的 CSS 已在 index.html 中定义（右上角 320×180）
+// 不使用 JavaScript 隐藏它，而是在 Canvas 上重新绘制镜像
 const gestureEl = document.getElementById('gesture');
 const progressEl = document.getElementById('progress');
 const startBtn = document.getElementById('start-btn');
@@ -316,25 +317,28 @@ let modelLoaded = false;
 // Debug: 儲存最近一次推論的完整結果供畫面顯示
 let lastDebugInfo = null;
 
+// 🔍 身體節點檢測狀態（用於黑框顯示）
+let lastPoseDetected = false;      // 是否檢測到身體節點
+let lastPosePointCount = 0;        // 檢測到的身體節點數量
+
 // 詞彙難度對照表 - 三級制 (根據 gesture_difficulty_classification.md)
 // 一級(1): 簡單, 二級(2): 中級, 三級(3): 高級
 const WORD_DIFFICULTY = {
-  // ⭐ 一級（初級） - 14個
-  '你好': 1, '再見': 1, '謝謝': 1, '對不起': 1, '沒關係': 1,
-  '可以': 1, '不可以': 1, '我': 1, '媽媽': 1, '爸爸': 1,
-  '朋友': 1, '棒': 1, '高興': 1, '生氣': 1,
+  // ⭐ 一級（初級） - 20個
+  '不可以': 1, '中午': 1, '公車': 1, '去': 1, '可以': 1,
+  '好吃': 1, '有': 1, '有沒有': 1, '你好': 1, '我': 1, 
+  '明天': 1, '是': 1, '飛機': 1, '記得': 1, '喜歡': 1, 
+  '棒': 1, '說話': 1, '檢查': 1, '謝謝': 1, '還沒': 1,
   
-  // ⭐⭐ 二級（中級） - 18個
-  '喜歡': 2, '不喜歡': 2, '要': 2, '去': 2, '找': 2,
-  '休息': 2, '公車': 2, '火車': 2, '飛機': 2, '機車': 2,
-  '計程車': 2, '飲料': 2, '好吃': 2, '蘋果': 2, '檢查': 2,
-  '幫忙': 2, '認真': 2, '高鐵': 2,
+  // ⭐⭐ 二級（中級） - 15個
+  '不客氣': 2, '不是': 2, '不喜歡': 2, '今天(現在)': 2, '生氣': 2, 
+  '休息': 2, '再見': 2, '忘記': 2, '朋友': 2, '爸爸': 2, 
+  '要': 2, '高興': 2, '會': 2, '認真': 2, '機車': 2,
   
-  // ⭐⭐⭐ 三級（高級） - 18個
-  '不是': 3, '是': 3, '會': 3, '有': 3, '有沒有': 3,
-  '我們': 3, '中午': 3, '今天(現在)': 3, '明天': 3, '放學': 3,
-  '幾點': 3, '忘記': 3, '記得': 3, '還沒': 3, '名字': 3,
-  '告訴': 3, '說話': 3, '不客氣': 3,
+  // ⭐⭐⭐ 三級（高級） - 15個
+  '火車': 3, '名字': 3, '告訴': 3, '我們': 3, '找': 3,
+  '沒關係': 3, '放學': 3, '計程車': 3, '高鐵': 3, '幾點': 3, 
+  '飲料': 3, '媽媽': 3, '對不起': 3, '幫忙': 3, '蘋果': 3,
 };
 
 let fullVocabulary = [];
@@ -364,27 +368,27 @@ async function initModel() {
     statusEl.textContent = '狀態: 正在載入 AI 模型...';
     console.log('🔄 開始加載 ONNX 模型...');
     
-    // 配置 ONNX Runtime Wasm 環境
     if (typeof ort !== 'undefined' && ort.env) {
-      console.log('🔧 設定 ONNX Runtime 環境...');
-      // 設置 WASM 路徑以正確加載外部數據文件
       ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/';
       ort.env.wasm.numThreads = 1;
     }
     
-    console.log('🔄 創建推理會話...');
-    // 只使用 wasm backend，禁用其他可能會失敗的 backend
     const options = {
       executionProviders: ['wasm'],
       graphOptimizationLevel: 'all'
     };
     
-    ortSession = await ort.InferenceSession.create('./tsl_model.onnx', options);
-    console.log('✅ 推理會話創建成功');
-    
-    const response = await fetch('./10_label_map.json');
+    ortSession = await ort.InferenceSession.create('./tsl_model_fold4.onnx', options);
+    console.log('✅ ONNX 推理會話創建成功');
+  } catch (onnxError) {
+    console.warn('⚠️ ONNX 加載失敗:', onnxError.message);
+    ortSession = null;
+  }
+  
+  try {
+    const response = await fetch('./label_map.json');
     labelMap = await response.json();
-    console.log('✅ ONNX model loaded', labelMap);
+    console.log('✅ Label map loaded');
 
     fullVocabulary = Object.entries(labelMap).map(([idx, text]) => ({
       text,
@@ -395,55 +399,36 @@ async function initModel() {
     gesturesLoaded = true;
     updateDifficultySelection();
 
-    // ****************************************************************************
-    // ****************************************************************************
-    // 💥 【音樂系統更動】：防呆避免蓋掉音樂解析狀態
     if (!isAnalyzing) statusEl.textContent = '狀態: AI 模型載入完成';
   } catch (e) {
-    console.error('Model init failed:', e);
-    statusEl.textContent = '狀態: AI 模型載入失敗 - ' + e.message;
+    console.error('載入失敗:', e);
+    statusEl.textContent = '狀態: 模型載入失敗';
   }
 }
 
 // -----------------------
-// 🔥 【能量偵測系統】動作活躍度驗證 (從 dynamic_energy_crop_138.py 轉換)
+// 🔥 【能量偵測系統】動作活躍度驗證 (新模型 66 維專用)
 // -----------------------
 /**
  * 計算單幀的能量值（以手部重心的標準差）
- * 支援 66 維特徵（新模型）和 138 維特徵（舊模型）
- * @param {Float32Array} frame - 特徵向量 (66 或 138 維)
+ * 新模型 66 維特徵專用
+ * @param {Float32Array} frame - 特徵向量 (66 維)
  * @returns {number} 能量值
  */
 function computeFrameEnergy(frame) {
-  if (!frame) return 0;
+  if (!frame || frame.length !== 66) return 0;
   
   let lh_pts, rh_pts;
   
-  // 判斷是 66 維還是 138 維
-  if (frame.length === 66) {
-    // 新模型：66 維 (左手 33 + 右手 33)，只有 11 個關鍵點
-    lh_pts = [];
-    for (let i = 0; i < 11; i++) {
-      lh_pts.push([frame[i*3], frame[i*3+1], frame[i*3+2]]);
-    }
-    
-    rh_pts = [];
-    for (let i = 0; i < 11; i++) {
-      rh_pts.push([frame[33 + i*3], frame[33 + i*3+1], frame[33 + i*3+2]]);
-    }
-  } else if (frame.length >= 126) {
-    // 舊模型：138 維 (左手 63 + 右手 63)，21 個點
-    lh_pts = [];
-    for (let i = 0; i < 21; i++) {
-      lh_pts.push([frame[i*3], frame[i*3+1], frame[i*3+2]]);
-    }
-    
-    rh_pts = [];
-    for (let i = 0; i < 21; i++) {
-      rh_pts.push([frame[63 + i*3], frame[63 + i*3+1], frame[63 + i*3+2]]);
-    }
-  } else {
-    return 0;
+  // 新模型：66 維 (左手 33 + 右手 33)，只有 11 個關鍵點
+  lh_pts = [];
+  for (let i = 0; i < 11; i++) {
+    lh_pts.push([frame[i*3], frame[i*3+1], frame[i*3+2]]);
+  }
+  
+  rh_pts = [];
+  for (let i = 0; i < 11; i++) {
+    rh_pts.push([frame[33 + i*3], frame[33 + i*3+1], frame[33 + i*3+2]]);
   }
   
   // 計算兩手重心
@@ -524,8 +509,8 @@ function analyzeBufferEnergy(buffer) {
   let peakFrames = finalEnergy.filter(e => e > peakThreshold).length;
   const peakRatio = peakFrames / buffer.length;
   
-  // 6. 判定標準：平均能量 > 0.05 且有 20% 以上的動態幀
-  const isValid = meanEnergy > 0.05 && peakRatio > 0.20;
+  // 6. 判定標準：平均能量 > 0.03 且有 15% 以上的動態幀（降低阈值以支持细微动作）
+  const isValid = meanEnergy > 0.03 && peakRatio > 0.15;
   
   return {
     energy: meanEnergy,
@@ -710,9 +695,16 @@ let isInferring = false;
 let handMissCount = 0;
 let handWasPresent = false;
 
+// 🔥 【動態重疊窗口】改進系統
+let windowQueue = [];                    // 存儲最近的推理結果
+const WINDOW_STRIDE = 5;               // 每 5 幀推理一次 (而非 10 幀)，增加重疊度
+const MAX_CONCURRENT_WINDOWS = 6;      // 最多保留 6 個推理結果進行投票
+const WINDOW_STABLE_COUNT = 3;         // 需要 3/6 或更多一致 (更寬鬆，因為有更多數據)
+
 function resetGestureSequence() {
   featureBuffer = [];
   predictionBuffer = [];
+  windowQueue = [];  // 清除窗口隊列
   inferenceCooldown = 0;
   isInferring = false;
   handWasPresent = false;
@@ -722,81 +714,96 @@ function resetGestureSequence() {
 }
 
 async function runInference() {
-  if (!ortSession || isInferring || featureBuffer.length < MIN_FRAMES_FOR_INFERENCE) return null;
-  
-  // 🔥 【新增】：推理前檢查動作動態度
-  lastEnergyAnalysis = analyzeBufferEnergy(featureBuffer);
-  console.log(`[能量] 平均: ${lastEnergyAnalysis.energy.toFixed(4)} | 峰值比: ${(lastEnergyAnalysis.peakRatio*100).toFixed(1)}% | ${lastEnergyAnalysis.reason}`);
-  
-  // 如果動作不夠動態，拒絕推理
-  if (!lastEnergyAnalysis.isValid) {
-    console.warn(`[拒絕推理] ${lastEnergyAnalysis.reason}`);
-    return null;
-  }
+  if (isInferring || featureBuffer.length < MIN_FRAMES_FOR_INFERENCE) return null;
   
   isInferring = true;
   try {
     const inputData = prepareModelInput(featureBuffer, MODEL_FRAMES);
-    const tensor = new ort.Tensor('float32', inputData, [1, MODEL_FRAMES, FEATURE_DIM]);
-    const results = await ortSession.run({ input: tensor });
-    const output = Array.from(results.output.data);
-
-    // 取得當前難度允許的詞彙清單
-    const activeWords = new Set(currentVocabulary.map(v => v.text));
-
-    // 建立 label index → word 對照，並遮蔽非當前難度的 logits
-    const maskedLogits = output.map((logit, i) => {
-      const word = labelMap[String(i)];
-      return activeWords.has(word) ? logit : -Infinity;
-    });
-
-    // 找最大 logit（只在允許的類別中）
-    const maxLogit = Math.max(...maskedLogits);
-    const predIdx = maskedLogits.indexOf(maxLogit);
-    const predLabel = labelMap[String(predIdx)];
-
-    // Debug: 記錄所有類別的原始 logits
-    const allPreds = [];
-    for (let i = 0; i < output.length; i++) {
-      const word = labelMap[String(i)] || `?${i}`;
-      const active = activeWords.has(word);
-      allPreds.push({ label: word, logit: output[i], active });
-    }
-    allPreds.sort((a, b) => b.logit - a.logit);
-    lastDebugInfo = {
-      top5: allPreds.filter(p => p.active).slice(0, 5).map(p => ({
-        label: p.label, prob: p.logit
-      })),
-      bufferLen: featureBuffer.length,
-      rawLogits: output.map(x => x.toFixed(2)),
-    };
-    const topActive = allPreds.filter(p => p.active).slice(0, 3);
-    console.log(`[推論] 緩衝=${featureBuffer.length}幀 | Top(該難度): ${topActive.map(p => `${p.label}(${p.logit.toFixed(2)})`).join(', ')}`);
     
-    // 診斷: 所有logits都很低时的警告
-    const maxLogitAll = Math.max(...output);
-    if (maxLogitAll < 0.1) {
-      console.warn('[警告] 所有logits都很低 (<0.1)，检查:', {
-        buffer帧数: featureBuffer.length,
-        所有logits: output.map(x => x.toFixed(4)).join(','),
+    // ✅ 【集成方式】只用 5-Fold 投票集成
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2000);
+      
+      const ensembleResult = await fetch('http://localhost:5001/predict', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          features: Array.from(inputData).reduce((acc, val, i) => {
+            const frameIdx = Math.floor(i / FEATURE_DIM);
+            const dimIdx = i % FEATURE_DIM;
+            if (!acc[frameIdx]) acc[frameIdx] = [];
+            acc[frameIdx][dimIdx] = val;
+            return acc;
+          }, [])
+        }),
+        signal: controller.signal
       });
+      clearTimeout(timeoutId);
+      
+      if (ensembleResult.ok) {
+        const ensembleData = await ensembleResult.json();
+        if (ensembleData.status === 'success') {
+          // 取得當前難度允許的詞彙清單（難度過濾）
+          const activeWords = new Set(currentVocabulary.map(v => v.text));
+          
+          // 【新增】設置 lastDebugInfo 以顯示預測分數
+          const topPredictions = ensembleData.all_logits
+            .map((logit, i) => ({
+              label: labelMap[String(i)] || `?${i}`,
+              prob: logit,
+              idx: i
+            }))
+            .sort((a, b) => b.prob - a.prob)
+            .slice(0, 4);
+          
+          lastDebugInfo = {
+            top5: topPredictions,
+            rawLogits: ensembleData.all_logits.slice(0, 10).map(x => x.toFixed(2))
+          };
+          
+          // 如果預測詞彙不在當前難度中，尋找該難度內最高的
+          if (!activeWords.has(ensembleData.label)) {
+            console.log(`[集成] 預測詞彙 "${ensembleData.label}" 不在當前難度，尋找備選...`);
+            
+            const maskedLogits = ensembleData.all_logits.map((logit, i) => {
+              const word = labelMap[String(i)] || `?${i}`;
+              return activeWords.has(word) ? logit : -Infinity;
+            });
+            
+            const maxLogit = Math.max(...maskedLogits);
+            const predIdx = maskedLogits.indexOf(maxLogit);
+            const predLabel = labelMap[String(predIdx)];
+            
+            console.log(`[集成] ✅ 5-Fold 集成推理成功 | 預測: ${predLabel} | 置信度: ${maxLogit.toFixed(3)}`);
+            isInferring = false;
+            return { label: predLabel, confidence: maxLogit };
+          }
+          
+          console.log(`[集成] ✅ 5-Fold 集成推理成功 | 預測: ${ensembleData.label} | 置信度: ${ensembleData.confidence.toFixed(3)} | 模型數: ${ensembleData.models_used}`);
+          isInferring = false;
+          return { label: ensembleData.label, confidence: ensembleData.confidence };
+        }
+      }
+    } catch (ensembleError) {
+      console.error(`[集成] ❌ Ensemble 推理失敗（後端未運行？）:`, ensembleError.message);
     }
-
+    
+    // ⚠️ 集成推理失敗 → 放棄本次推理，不降級
     isInferring = false;
-    // 使用原始 logit 值（不做 softmax），跟隊友的 checkGesture 一致
-    return { label: predLabel, confidence: maxLogit };
+    return null;
+    
   } catch (e) {
-    console.error('Inference error:', e);
+    console.error('[推理] 異常:', e);
     isInferring = false;
     return null;
   }
 }
 
-function processInferenceResult(result) {
+function processInferenceResult(result, frameIndex) {
   if (!result) {
     // 🔥 【新增】：檢查是否因為能量不足而被拒絕
     if (lastEnergyAnalysis && !lastEnergyAnalysis.isValid) {
-      console.log(`[提示] 推理被拒絕: ${lastEnergyAnalysis.reason}`);
       if (progressEl) {
         progressEl.textContent = `進度: ⚠️ ${lastEnergyAnalysis.reason} (繼續擺動手部)`;
       }
@@ -807,27 +814,64 @@ function processInferenceResult(result) {
 
   // 原始 logit 門檻 0.75（跟隊友的 checkGesture 一致）
   if (result.confidence < CONFIDENCE_THRESHOLD) {
-    console.log(`[過濾] ${result.label} logit=${result.confidence.toFixed(2)} < 門檻 ${CONFIDENCE_THRESHOLD}`);
     return;
   }
 
-  // 連續判定邏輯 (5 次中至少 4 次一致)
+  // 🔥 【改進】：多窗口加權投票（動態重疊窗口）
+  // 添加到窗口隊列
+  windowQueue.push({
+    timestamp: frameIndex,
+    label: result.label,
+    confidence: result.confidence,
+  });
+  
+  // 保持隊列大小
+  if (windowQueue.length > MAX_CONCURRENT_WINDOWS) {
+    windowQueue.shift();
+  }
+  
+  // 基於多個窗口的加權投票
+  const weights = windowQueue.map((_, i) => 0.5 + (i / MAX_CONCURRENT_WINDOWS) * 0.5); // 最近的權重更高
+  const scores = {};
+  let totalWeight = 0;
+  
+  windowQueue.forEach((w, i) => {
+    const labelScore = (scores[w.label] || 0) + weights[i];
+    scores[w.label] = labelScore;
+    totalWeight += weights[i];
+  });
+  
+  // 找出得分最高的標籤
+  const stableLabel = Object.keys(scores).reduce((a, b) => 
+    scores[a] > scores[b] ? a : b, Object.keys(scores)[0]
+  );
+  const stableScore = scores[stableLabel] / totalWeight;
+  
+  // 判定標準：至少 3/6 一致（或加權分數 > 0.4）
+  const isStable = stableScore > 0.40;
+  
+  
+  // 🔥 【新增】：實時顯示推理進度到黑框
+  if (progressEl) {
+    if (isStable) {
+      progressEl.textContent = `進度: 穩定判定 ${stableLabel} (${(stableScore*100).toFixed(0)}%) ✓`;
+    } else {
+      progressEl.textContent = `進度: 推理中 ${stableLabel}(${(stableScore*100).toFixed(0)}%)... (${windowQueue.length}/${MAX_CONCURRENT_WINDOWS})`;
+    }
+  }
+  
+  // 同時保持舊的 predictionBuffer 用於相容性
   predictionBuffer.push(result.label);
   if (predictionBuffer.length > PREDICTION_BUFFER_SIZE) predictionBuffer.shift();
 
-  const counts = {};
-  predictionBuffer.forEach(x => counts[x] = (counts[x] || 0) + 1);
-  const stableLabel = Object.keys(counts).find(key => counts[key] >= STABLE_COUNT);
-  console.log(`[緩衝] ${predictionBuffer.join(',')} | 穩定=${stableLabel || '無'}`);
-
-  if (stableLabel && gameStarted && !gameOver) {
+  if (isStable && gameStarted && !gameOver) {
     for (let b of bombs) {
       if (b.word === stableLabel && !b.shrinking && !b.exploding) {
-        console.log(`[成功] 消除炸彈: ${stableLabel}`);
         b.startShrink(false);
         inferenceCooldown = 30;
         featureBuffer = [];
         predictionBuffer = [];
+        windowQueue = [];  // 清除窗口隊列
         if (progressEl) progressEl.textContent = `進度: 辨識成功 (${stableLabel})`;
         break;
       }
@@ -837,6 +881,11 @@ function processInferenceResult(result) {
 
 function updateDynamicGesture(results) {
   if (inferenceCooldown > 0) inferenceCooldown--;
+  
+  // 🔍 更新身體節點檢測狀態
+  lastPoseDetected = !!(results && results.poseLandmarks && results.poseLandmarks.length > 12);
+  lastPosePointCount = results && results.poseLandmarks ? results.poseLandmarks.length : 0;
+  
   const hasHand = results && (results.leftHandLandmarks || results.rightHandLandmarks);
 
   if (!hasHand) {
@@ -850,10 +899,12 @@ function updateDynamicGesture(results) {
     if (handMissCount < 5) return;
     if (handWasPresent && featureBuffer.length >= MIN_FRAMES_FOR_INFERENCE &&
       !isInferring && inferenceCooldown <= 0 && bombs.length > 0) {
-      runInference().then(r => processInferenceResult(r));
+      runInference().then(r => processInferenceResult(r, featureBuffer.length));
     }
     handWasPresent = false;
-    if (progressEl && inferenceCooldown <= 0) progressEl.textContent = '進度: 等待手勢...';
+    if (progressEl && inferenceCooldown <= 0) {
+      progressEl.textContent = `進度: 等待手勢...`;
+    }
     return;
   }
 
@@ -868,35 +919,23 @@ function updateDynamicGesture(results) {
       
       // 诊断：检查特征是否全为0或其他异常值
       const nonZeroCount = frame.filter(v => Math.abs(v) > 1e-6).length;
-      if (featureBuffer.length === 0 && nonZeroCount < 10) {
-        console.warn('[特征提取] 非零值过少:', nonZeroCount, '个，特征可能有问题');
-        console.log('[特征样本]', {
-          leftHand: frame.slice(0, 9).map(x => x.toFixed(3)).join(','),
-          rightHand: frame.slice(63, 72).map(x => x.toFixed(3)).join(','),
-          global: frame.slice(126, 138).map(x => x.toFixed(3)).join(','),
-          诊断信息: typeof lastFeatureDiag !== 'undefined' ? lastFeatureDiag : '无',
-        });
-      }
       
       featureBuffer.push(frame);
       if (featureBuffer.length > FEATURE_BUFFER_MAX) featureBuffer.shift();
       
-      // 🔥 【新增】：實時顯示能量信息
+      // 🔥 【簡化】：只顯示緩衝進度，不計算能量（太耗資源）
       let progressText = `進度: 錄製動作 (${featureBuffer.length}/${FEATURE_BUFFER_MAX})`;
-      if (featureBuffer.length >= 10) {
-        const energyInfo = analyzeBufferEnergy(featureBuffer);
-        progressText += ` | 能量: ${energyInfo.energy.toFixed(3)} | ${energyInfo.reason}`;
-      }
       if (progressEl) progressEl.textContent = progressText;
 
+      // 🔥 【改進】：每 5 幀推理一次（而非 10 幀），增加重疊度
       if (featureBuffer.length >= MIN_FRAMES_FOR_INFERENCE &&
         !isInferring && inferenceCooldown <= 0 && bombs.length > 0) {
-        if (featureBuffer.length % 10 === 0 || featureBuffer.length >= FEATURE_BUFFER_MAX) {
-          runInference().then(r => processInferenceResult(r));
+        if (featureBuffer.length % WINDOW_STRIDE === 0 || featureBuffer.length >= FEATURE_BUFFER_MAX) {
+          runInference().then(r => processInferenceResult(r, featureBuffer.length));
         }
       }
   } else {
-      console.warn("找不到 extractFrame138 函數，請確保它在其他檔案或全域中定義。");
+      console.error("特徵提取失敗：extractFrame66 找不到");
   }
 }
 
@@ -989,20 +1028,58 @@ function renderCamera() {
   if (lastVideoFrame && lastVideoFrame.videoWidth > 0) {
     ctx.save();
     // 使用 Canvas 變換進行鏡像
-    ctx.translate(camX + camW, camY);   // 移到右下角作為中心
-    ctx.scale(-1, 1);                   // 水平翻轉
+    ctx.translate(camX + camW, camY);   // 移到右上角
+    ctx.scale(-1, 1);                   // 水平翻轉（鏡像）
     ctx.drawImage(lastVideoFrame, 0, 0, camW, camH);
     ctx.restore();
+  } else {
+    // 播放中但無視頻 - 顯示占位符
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(camX, camY, camW, camH);
+    ctx.fillStyle = '#666';
+    ctx.font = '12px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('攝像頭加載中...', camX + camW/2, camY + camH/2);
+    console.warn('[renderCamera] lastVideoFrame 為 null 或無視頻寬度');
   }
 
   // 【第二步】繪製手部節點
   if (lastHandLandmarks && lastHandLandmarks.length > 0) {
-    console.log(`[renderCamera] 繪製 ${lastHandLandmarks.length} 隻手的節點`);
     ctx.fillStyle = '#0f0';
+    ctx.strokeStyle = '#0f0';
+    ctx.lineWidth = 2;
+    
     for (let handIdx = 0; handIdx < lastHandLandmarks.length; handIdx++) {
       const hand = lastHandLandmarks[handIdx];
-      console.log(`[renderCamera] 手 ${handIdx}: ${hand.length} 個點`);
       
+      // 繪製節點網絡（骨骼連接）
+      const connections = [
+        [0,1],[1,2],[2,3],[3,4],  // 大拇指
+        [0,5],[5,6],[6,7],[7,8],  // 食指
+        [0,9],[9,10],[10,11],[11,12],  // 中指
+        [0,13],[13,14],[14,15],[15,16],  // 無名指
+        [0,17],[17,18],[18,19],[19,20]   // 小指
+      ];
+      
+      // 繪製骨骼
+      ctx.strokeStyle = '#00ff00';
+      ctx.lineWidth = 1;
+      for (const [start, end] of connections) {
+        const lmStart = hand[start];
+        const lmEnd = hand[end];
+        const x1 = camX + (1 - lmStart.x) * camW;  // 鏡像：1-x
+        const y1 = camY + lmStart.y * camH;
+        const x2 = camX + (1 - lmEnd.x) * camW;
+        const y2 = camY + lmEnd.y * camH;
+        
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+      }
+      
+      // 繪製節點點圓
+      ctx.fillStyle = '#0f0';
       for (let ptIdx = 0; ptIdx < hand.length; ptIdx++) {
         const lm = hand[ptIdx];
         // 鏡像坐標計算：(1 - lm.x) 反轉 X 軸
@@ -1014,8 +1091,6 @@ function renderCamera() {
         ctx.fill();
       }
     }
-  } else {
-    console.log(`[renderCamera] ⚠️ lastHandLandmarks 為空`);
   }
 
   // 【第三步】繪製綠色邊框
@@ -1031,15 +1106,17 @@ function renderCamera() {
 let lastFeatureDiag = null;
 
 function renderDebugOverlay() {
-  const x = 10, y = HEIGHT - 190;  // 減少高度，移除特徵診斷空間
+  const x = 10, y = HEIGHT - 210;  // 黑框位置往上移，給新行留空間
   ctx.fillStyle = 'rgba(0,0,0,0.75)';
-  ctx.fillRect(x, y, 420, 180);  // 黑框高度改為 180
+  ctx.fillRect(x, y, 420, 200);  // 黑框高度增加到 200
   ctx.fillStyle = '#0f0';
   ctx.font = '13px monospace';
   ctx.textAlign = 'left';
 
   let ly = y + 18;
-  ctx.fillText(`[Buffer] ${featureBuffer.length}/${FEATURE_BUFFER_MAX} | [Hand] ${handWasPresent ? 'YES' : 'NO'} | [CD] ${inferenceCooldown}`, x + 8, ly);
+  // 第一行：Buffer、手部、冷卻時間、身體節點
+  const poseIndicator = lastPoseDetected ? `✓(${lastPosePointCount})` : '✗';
+  ctx.fillText(`[Buffer] ${featureBuffer.length}/${FEATURE_BUFFER_MAX} | [Hand] ${handWasPresent ? 'YES' : 'NO'} | [Pose] ${poseIndicator} | [CD] ${inferenceCooldown}`, x + 8, ly);
   ly += 18;
   ctx.fillText(`[Smooth] ${predictionBuffer.join(',') || '(空)'} (需${STABLE_COUNT}/${PREDICTION_BUFFER_SIZE}次)`, x + 8, ly);
 
@@ -1179,7 +1256,7 @@ function gameLoop() {
     // ***************************************
     // ****************************************************************************
     }
-    updateHud();
+    updateHud();  // 恢復以顯示按鈕
     requestAnimationFrame(gameLoop);
     return;
   }
@@ -1189,7 +1266,7 @@ function gameLoop() {
   if (backgroundImg.complete && backgroundImg.naturalWidth > 0) ctx.drawImage(backgroundImg, 0, 0, WIDTH, HEIGHT);
   else { ctx.fillStyle = '#003366'; ctx.fillRect(0, 0, WIDTH, HEIGHT); }
 
-  // ★ 遊戲中也顯示攝影機 + 手部節點
+  // ★ 遊戲中也顯示攝影機 (但不畫骨骼)
   renderCamera();
 
   if (!gameOver && !gamePaused) {
@@ -1316,14 +1393,15 @@ function gameLoop() {
 
   plane.render(ctx);
   renderDebugOverlay();
-  updateHud();
+  // updateHud();  // 🔥 禁用右下角 CD 以優化性能
   requestAnimationFrame(gameLoop);
 }
 
 // -----------------------
-// MediaPipe Hand 引擎 (Tasks Vision API)
+// MediaPipe 双模型检测引擎 (Tasks Vision API)
 // -----------------------
-let handLandmarker = null;
+let handLandmarker = null;      // 手部检测
+let poseLandmarker = null;      // 身体检测
 let lastVideoTime = -1;
 
 async function initWebcam() {
@@ -1332,34 +1410,97 @@ async function initWebcam() {
   try {
     // 使用 ES Module Dynamic Import 載入 @mediapipe/tasks-vision
     const visionModule = await import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/vision_bundle.mjs");
-    const { FilesetResolver: FR, HandLandmarker: HL } = visionModule;
+    const { FilesetResolver: FR, HandLandmarker: HL, PoseLandmarker: PL } = visionModule;
+    
+    // 🔍 檢查導入是否成功
+    console.log("[✅ initWebcam] 模組導入完成");
+    console.log("[🔍 診斷] FR (FilesetResolver):", typeof FR);
+    console.log("[🔍 診斷] HL (HandLandmarker):", typeof HL);
+    console.log("[🔍 診斷] PL (PoseLandmarker):", typeof PL);
+    
+    if (!PL) {
+      console.error("[❌] PoseLandmarker 在 vision_bundle 中不存在！");
+      console.log("[📦 vision_bundle 包含的exports]:", Object.keys(visionModule));
+    }
 
-    statusEl.textContent = '狀態: 正在載入 Hand 模型...';
+    statusEl.textContent = '狀態: 正在載入模型...'
 
     const filesetResolver = await FR.forVisionTasks(
       "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm"
     );
 
+    // 🔥 加载 HandLandmarker（手部检测）
+    console.log("[🔥 initWebcam] 創建 HandLandmarker...");
     handLandmarker = await HL.createFromOptions(filesetResolver, {
       baseOptions: {
         modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task",
-        delegate: "GPU"
+        delegate: "CPU"  // ✅ 改為 CPU（WASM）穩定性更好，避免 GPU 競爭
       },
       runningMode: "VIDEO",
-      numHands: 2,  // 同時檢測二隻手
+      numHands: 2,
       minHandDetectionConfidence: 0.5,
       minHandPresenceConfidence: 0.5,
       minTrackingConfidence: 0.5
     });
+    console.log("[✅ initWebcam] HandLandmarker 創建成功");
 
-    console.log("[Hand] HandLandmarker 建立成功 (Tasks Vision API)");
+    // 🔥 加载 PoseLandmarker（身体检测）- 用于获得肩膀位置
+    console.log("[🔥 initWebcam] 創建 PoseLandmarker...");
+    
+    try {
+      // 嘗試多個可能的 URL
+      const poseUrls = [
+        // 方案 1: 標準版本 (float16) - Google Storage
+        "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker/float16/latest/pose_landmarker.task",
+        // 方案 2: 標準版本 (int8) - Google Storage
+        "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker/int8/latest/pose_landmarker.task",
+        // 方案 3: Full 版本 - Google Storage
+        "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/latest/pose_landmarker_full.task",
+        // 方案 4: Heavy 版本 - Google Storage
+        "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task",
+      ];
+      
+      let poseModelUrl = null;
+      let lastError = null;
+      
+      for (const url of poseUrls) {
+        try {
+          console.log(`[🔥 嘗試] ${url}`);
+          const poseOptions = {
+            baseOptions: { modelAssetPath: url },
+            runningMode: "VIDEO"
+          };
+          
+          poseLandmarker = await PL.createFromOptions(filesetResolver, poseOptions);
+          poseModelUrl = url;
+          console.log(`[✅ 成功] PoseLandmarker 已加載`);
+          break;
+        } catch (err) {
+          lastError = err;
+          console.warn(`[⚠️ 失敗] ${err.message.substring(0, 60)}...`);
+        }
+      }
+      
+      if (!poseLandmarker && lastError) {
+        console.error("[❌ 所有 PoseLandmarker URL 都失敗]", lastError.message);
+        console.warn("[⚠️ 特徵歸一化將使用預設肩膀 [0.5,0.5,0.0]，識別準確度會降低");
+        poseLandmarker = null;
+      } else if (poseLandmarker) {
+        console.log("[✅ 身體節點已就緒，特徵歸一化使用真實肩膀位置 ✓✓✓");
+      }
+    } catch (poseError) {
+      console.error("[❌ PoseLandmarker 異常]", poseError.message);
+      poseLandmarker = null;
+    }
+
+    console.log("[Holistic] ✅ 模型已就緒");
 
     // 開啟攝影機 (使用 ideal 而不是精確要求，讓瀏覽器自動選擇可用分辨率)
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { 
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
+          width: { ideal: 640 },  // ✅ 降低分辨率 1280→640，減少檢測開銷
+          height: { ideal: 360 },
           facingMode: "user"
         },
         audio: false
@@ -1372,11 +1513,15 @@ async function initWebcam() {
       });
       
       await video.play().catch(err => console.warn("Video play error:", err));
+      
+      // 🔥 立即设置 lastVideoFrame，让 renderCamera 能立即开始渲染
       lastVideoFrame = video;
       console.log("[Webcam] ✅ 攝照頭已連線");
       statusEl.textContent = '狀態: 已連線攝像頭（可進行手勢偵測）';
       console.log(`[Webcam] 分辨率: ${video.videoWidth}×${video.videoHeight}`);
-      predictWebcam();
+      
+      // 🔥 啟動手勢檢測（10 FPS，獨立於遊戲迴圈，不搶主線程）
+      setInterval(predictWebcam, PREDICT_FRAME_INTERVAL);
     } catch (mediaError) {
       console.error("[Webcam] ❌ 攝影機啟動失敗:", mediaError.name, "-", mediaError.message);
       console.warn("[Webcam] 解决方案: 检查浏览器权限、关闭占用摄像头的应用、或使用不同浏览器");
@@ -1385,67 +1530,60 @@ async function initWebcam() {
     }
 
   } catch (error) {
-    console.error("[Init] Hand 模型初始化失敗:", error);
-    statusEl.textContent = '狀態: Hand 模型載入失敗 - ' + error.message;
+    console.error("[Init] Holistic 模型初始化失敗:", error);
+    statusEl.textContent = '狀態: Holistic 模型載入失敗 - ' + error.message;
   }
 }
 
 let lastPredictTime = 0;
-const PREDICT_FRAME_INTERVAL = 33;  // 30 FPS (改善手部同步)
+const PREDICT_FRAME_INTERVAL = 100;  // ✅ 改為 10 FPS（100ms），完全分離主線程
 async function predictWebcam() {
-  if (!handLandmarker) return;
+  if (!handLandmarker) return;  // 只需要 handLandmarker，poseLandmarker 是可选的
 
   // 確認影片播放中
   if (video.currentTime === lastVideoTime) {
-    requestAnimationFrame(predictWebcam);
     return;
   }
 
-  // 限制推論幀率約 30 FPS (每 33ms 執行一次) 改善手部節點同步
-  const now = performance.now();
-  if (now - lastPredictTime < PREDICT_FRAME_INTERVAL) {
-    requestAnimationFrame(predictWebcam);
-    return;
-  }
-
-  lastPredictTime = now;
   lastVideoTime = video.currentTime;
 
   try {
     const startTimeMs = performance.now();
-    const results = handLandmarker.detectForVideo(video, startTimeMs);
+    
+    // 🔥 双模型并行检测（poseLandmarker 是可选的）
+    const handResults = handLandmarker.detectForVideo(video, startTimeMs);
+    const poseResults = poseLandmarker ? poseLandmarker.detectForVideo(video, startTimeMs) : null;
+    
+    // 🔍 診斷信息已禁用（性能優先）
 
-    // Hand Landmarker 返回的是一個或兩個手的書蹟
+    // 提取手部节点
     let leftHandLandmarks = null;
     let rightHandLandmarks = null;
     
-    // 🔥 診斷：檢查原始結果
-    if (!results) {
-      console.warn('[predictWebcam] results 為 null');
-    } else if (!results.landmarks) {
-      console.warn('[predictWebcam] results.landmarks 為 null/undefined');
-    } else {
-      console.log(`[predictWebcam] ✅ 檢測到 ${results.landmarks.length} 隻手`);
-    }
-    
-    if (results.landmarks && results.landmarks.length > 0) {
-      if (results.handedness && results.handedness.length > 0) {
-        // 根據 handedness 的位置區分左手和右手
-        for (let i = 0; i < results.landmarks.length; i++) {
-          const handedness = results.handedness[i][0].categoryName; // 'Left' or 'Right'
+    if (handResults && handResults.landmarks && handResults.landmarks.length > 0) {
+      if (handResults.handedness && handResults.handedness.length > 0) {
+        // 根据 handedness 的位置区分左手和右手
+        for (let i = 0; i < handResults.landmarks.length; i++) {
+          const handedness = handResults.handedness[i][0].categoryName; // 'Left' or 'Right'
           if (handedness === 'Left') {
-            leftHandLandmarks = results.landmarks[i];
+            leftHandLandmarks = handResults.landmarks[i];
           } else if (handedness === 'Right') {
-            rightHandLandmarks = results.landmarks[i];
+            rightHandLandmarks = handResults.landmarks[i];
           }
         }
       }
     }
 
-    // 格式轉換以相容舊的 results 格式 (用於除錯顯示與特徵提取)
+    // 提取身体节点
+    let poseLandmarks = null;
+    if (poseResults && poseResults.landmarks && poseResults.landmarks.length > 0) {
+      poseLandmarks = poseResults.landmarks[0];  // 第一个人的身体节点
+    }
+
+    // 格式转换以兼容特征提取
     const formattedResults = {
-      poseLandmarks: null,  // Hand Landmarker 不會返回體態
-      faceLandmarks: null,  // Hand Landmarker 不會返回臉部
+      poseLandmarks: poseLandmarks,        // ✅ 现在有真实的身体节点！
+      faceLandmarks: null,
       leftHandLandmarks: leftHandLandmarks,
       rightHandLandmarks: rightHandLandmarks,
     };
@@ -1454,11 +1592,6 @@ async function predictWebcam() {
     if (formattedResults.leftHandLandmarks) handList.push(formattedResults.leftHandLandmarks);
     if (formattedResults.rightHandLandmarks) handList.push(formattedResults.rightHandLandmarks);
     lastHandLandmarks = handList.length > 0 ? handList : null;
-    
-    // 🔥 診斷：檢查 lastHandLandmarks 是否被設置
-    if (lastHandLandmarks) {
-      console.log(`[predictWebcam] ✅ lastHandLandmarks 已設置: ${lastHandLandmarks.length} 隻手`);
-    }
 
 
     updateDynamicGesture(formattedResults);
@@ -1466,8 +1599,6 @@ async function predictWebcam() {
   } catch (e) {
     console.error("Detection error:", e);
   }
-
-  requestAnimationFrame(predictWebcam);
 }
 
 // -----------------------
