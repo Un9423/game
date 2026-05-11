@@ -1,8 +1,10 @@
 """
 ensemble_server.py
 ==================
-5-Fold 集成推理服务器
-加载 5 个 Fold 模型，使用投票集成进行预测
+单 Fold 測試模式 (改為逐個測試 Fold_1 ~ Fold_5)
+
+【使用說明】改下面的 TESTING_FOLD 數字即可切換測試的 Fold:
+  TESTING_FOLD = 1  # 改成 1, 2, 3, 4, 5 測試不同 Fold
 """
 
 import torch
@@ -80,17 +82,23 @@ DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"使用設備: {DEVICE}")
 
 # ============================================
-# 3. 加載 5 個 Fold 模型
+# 3. 單 Fold 測試配置
 # ============================================
+# 【重要】改這個數字來切換測試的 Fold (1~5)
+TESTING_FOLD = 5
+print(f"\n🧪 單 Fold 測試模式: 測試 Fold_{TESTING_FOLD}")
+
 OUTPUT_DIR = "train_V21_Transformer_66(with asl weight + new video + sliding window + K-fold)"
 
 # 標籤映射和超參數優先從根目錄讀取
 LABEL_MAP_PATH = "label_map.json"  # 項目根目錄
-BEST_PARAMS_PATH = "best_params.json"  # 或從訓練文件夾讀取
+BEST_PARAMS_PATH = "10_best_params.json"  # 或從訓練文件夾讀取
 
 # 如果根目錄沒有，退而求其次從訓練文件夾讀取
 if not os.path.exists(LABEL_MAP_PATH):
     LABEL_MAP_PATH = os.path.join(OUTPUT_DIR, "label_map.json")
+if not os.path.exists(BEST_PARAMS_PATH):
+    BEST_PARAMS_PATH = os.path.join(OUTPUT_DIR, "best_params.json")
 
 # 讀取超參數
 with open(BEST_PARAMS_PATH, 'r', encoding='utf-8') as f:
@@ -105,47 +113,39 @@ with open(LABEL_MAP_PATH, 'r', encoding='utf-8') as f:
 num_classes = len(label_map)
 print(f"✅ 加載標籤映射: {num_classes} 個詞彙")
 
-# 加載 5 個 Fold 模型
-models = []
-for fold_idx in range(1, 6):
-    fold_dir = os.path.join(OUTPUT_DIR, f"Fold_{fold_idx}")
-    model_path = os.path.join(fold_dir, f"best_model.pth")
-    
-    if not os.path.exists(model_path):
-        print(f"⚠️ 警告: 找不到 Fold {fold_idx} 模型: {model_path}")
-        continue
-    
-    # 創建模型
-    model = CNNTransformerTSL(
-        input_dim=66,
-        num_classes=num_classes,
-        hidden_dim=best_params['hidden_dim'],
-        num_layers=best_params['num_layers'],
-        dropout=best_params['dropout']
-    ).to(DEVICE)
-    
-    # 加載權重
-    try:
-        state_dict = torch.load(model_path, map_location=DEVICE, weights_only=True)
-        model.load_state_dict(state_dict)
-        model.eval()
-        models.append(model)
-        print(f"✅ 加載 Fold {fold_idx} 模型成功")
-    except Exception as e:
-        print(f"❌ Fold {fold_idx} 加載失敗: {e}")
+# 加載單個 Fold 模型
+fold_dir = os.path.join(OUTPUT_DIR, f"Fold_{TESTING_FOLD}")
+model_path = os.path.join(fold_dir, f"best_model.pth")
 
-if not models:
-    print("❌ 錯誤: 沒有成功加載任何模型！")
+if not os.path.exists(model_path):
+    print(f"❌ 錯誤: 找不到 Fold_{TESTING_FOLD} 模型: {model_path}")
     exit(1)
 
-print(f"✅ 成功加載 {len(models)} 個 Fold 模型")
+# 創建模型
+model = CNNTransformerTSL(
+    input_dim=66,
+    num_classes=num_classes,
+    hidden_dim=best_params['hidden_dim'],
+    num_layers=best_params['num_layers'],
+    dropout=best_params['dropout']
+).to(DEVICE)
+
+# 加載權重
+try:
+    state_dict = torch.load(model_path, map_location=DEVICE, weights_only=True)
+    model.load_state_dict(state_dict)
+    model.eval()
+    print(f"✅ 加載 Fold_{TESTING_FOLD} 模型成功")
+except Exception as e:
+    print(f"❌ Fold_{TESTING_FOLD} 加載失敗: {e}")
+    exit(1)
 
 # ============================================
-# 4. Ensemble 推理函數
+# 4. 單模型推理函數
 # ============================================
-def ensemble_predict(features_tensor):
+def single_fold_predict(features_tensor):
     """
-    使用 5 個 Fold 模型進行集成預測
+    使用單個 Fold 模型進行預測
     
     Args:
         features_tensor: [B, T, D] 的 PyTorch tensor
@@ -154,21 +154,15 @@ def ensemble_predict(features_tensor):
         pred_label, confidence, all_logits
     """
     with torch.no_grad():
-        all_logits = []
-        
-        for model in models:
-            logits = model(features_tensor)  # [B, num_classes]
-            all_logits.append(logits.cpu().numpy())
-        
-        # 平均 logits（集成策略）
-        avg_logits = np.mean(all_logits, axis=0)  # [B, num_classes]
+        logits = model(features_tensor)  # [B, num_classes]
+        logits_np = logits.cpu().numpy()
         
         # 取最大值
-        pred_idx = np.argmax(avg_logits[0])
-        confidence = float(avg_logits[0, pred_idx])
+        pred_idx = np.argmax(logits_np[0])
+        confidence = float(logits_np[0, pred_idx])
         pred_label = label_map[str(pred_idx)]
         
-        return pred_label, confidence, avg_logits[0]
+        return pred_label, confidence, logits_np[0]
 
 # ============================================
 # 5. API 端點
@@ -178,8 +172,8 @@ def ensemble_predict(features_tensor):
 def index():
     """測試端點"""
     return {
-        "status": "✅ Ensemble 服務器運行中",
-        "models_loaded": len(models),
+        "status": f"✅ 單 Fold 測試服務器運行中 (Fold_{TESTING_FOLD})",
+        "testing_fold": TESTING_FOLD,
         "num_classes": num_classes,
         "endpoint": "/predict"
     }
@@ -220,14 +214,14 @@ def predict():
         # 轉換為 tensor 並添加 batch 維度
         features_tensor = torch.from_numpy(features).unsqueeze(0).to(DEVICE)  # [1, 30, 66]
         
-        # 集成推理
-        pred_label, confidence, all_logits = ensemble_predict(features_tensor)
+        # 單 Fold 推理
+        pred_label, confidence, all_logits = single_fold_predict(features_tensor)
         
         return {
             "label": pred_label,
             "confidence": float(confidence),
             "all_logits": all_logits.tolist(),
-            "models_used": len(models),
+            "testing_fold": TESTING_FOLD,
             "status": "success"
         }
     
@@ -243,7 +237,7 @@ def health():
     """健康檢查端點"""
     return {
         "status": "ok",
-        "models_loaded": len(models),
+        "testing_fold": TESTING_FOLD,
         "device": str(DEVICE)
     }
 
@@ -252,9 +246,9 @@ def health():
 # ============================================
 if __name__ == "__main__":
     print("\n" + "="*50)
-    print("🚀 5-Fold Ensemble 推理服務器啟動")
+    print("🚀 單 Fold 測試推理服務器啟動")
     print("="*50)
-    print(f"📊 已加載 {len(models)} 個模型")
+    print(f"🧪 測試模型: Fold_{TESTING_FOLD}")
     print(f"🎯 支持 {num_classes} 個詞彙")
     print(f"⚙️ 推理服務: http://localhost:5001/predict")
     print("="*50 + "\n")

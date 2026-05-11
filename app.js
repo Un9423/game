@@ -747,18 +747,19 @@ async function runInference() {
           // 取得當前難度允許的詞彙清單（難度過濾）
           const activeWords = new Set(currentVocabulary.map(v => v.text));
           
-          // 【新增】設置 lastDebugInfo 以顯示預測分數
+          // 【修正】只從當前難度的詞彙中取前4高
           const topPredictions = ensembleData.all_logits
             .map((logit, i) => ({
               label: labelMap[String(i)] || `?${i}`,
               prob: logit,
               idx: i
             }))
+            .filter(p => activeWords.has(p.label))  // ✅ 只保留難度內的詞彙
             .sort((a, b) => b.prob - a.prob)
-            .slice(0, 4);
+            .slice(0, 4);  // ✅ 從過濾後的詞彙中取前4
           
           lastDebugInfo = {
-            top5: topPredictions,
+            top4: topPredictions,  // 改名為 top4 以符合實際
             rawLogits: ensembleData.all_logits.slice(0, 10).map(x => x.toFixed(2))
           };
           
@@ -1126,7 +1127,7 @@ function renderDebugOverlay() {
     ctx.fillStyle = '#ff0';
     ctx.font = '13px monospace';
     ctx.fillText(`=== 預測 (門檻${CONFIDENCE_THRESHOLD}) ===`, x + 8, ly);
-    lastDebugInfo.top5.slice(0, 3).forEach((p, i) => {
+    lastDebugInfo.top4.forEach((p, i) => {
       ly += 16;
       const barW = Math.max(0, (p.prob + 3) * 20);
       ctx.fillStyle = (i === 0 && p.prob >= CONFIDENCE_THRESHOLD) ? '#0f0' : '#555';
