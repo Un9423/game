@@ -20,7 +20,7 @@ from pathlib import Path
 # 1. 模型架构（与 train_transformer.py 一致）
 # ============================================
 class CNNTransformerTSL(nn.Module):
-    def __init__(self, input_dim=66, num_classes=50, hidden_dim=128, num_layers=2, dropout=0.5):
+    def __init__(self, input_dim=74, num_classes=50, hidden_dim=128, num_layers=2, dropout=0.5):
         super().__init__()
         
         # CNN 層
@@ -85,7 +85,7 @@ print(f"使用設備: {DEVICE}")
 # 3. 單 Fold 測試配置
 # ============================================
 # 【重要】改這個數字來切換測試的 Fold (1~5)
-TESTING_FOLD = 5
+TESTING_FOLD = 1
 print(f"\n🧪 單 Fold 測試模式: 測試 Fold_{TESTING_FOLD}")
 
 OUTPUT_DIR = "train_V21_Transformer_66(with asl weight + new video + sliding window + K-fold)"
@@ -123,7 +123,7 @@ if not os.path.exists(model_path):
 
 # 創建模型
 model = CNNTransformerTSL(
-    input_dim=66,
+    input_dim=74,
     num_classes=num_classes,
     hidden_dim=best_params['hidden_dim'],
     num_layers=best_params['num_layers'],
@@ -185,7 +185,7 @@ def predict():
     
     期望的 JSON 格式:
     {
-        "features": [[...], [...], ...],  // [30, 66] 的陣列
+        "features": [[...], [...], ...],  // [30, 74] 的陣列
     }
     
     返回:
@@ -205,14 +205,14 @@ def predict():
         features = np.array(data["features"], dtype=np.float32)
         
         # 驗證形狀
-        if features.shape != (30, 66):
+        if features.shape != (30, 74):
             return {
-                "error": f"特徵形狀錯誤: {features.shape}，期望 (30, 66)",
+                "error": f"特徵形狀錯誤: {features.shape}，期望 (30, 74)",
                 "status": "error"
             }, 400
         
         # 轉換為 tensor 並添加 batch 維度
-        features_tensor = torch.from_numpy(features).unsqueeze(0).to(DEVICE)  # [1, 30, 66]
+        features_tensor = torch.from_numpy(features).unsqueeze(0).to(DEVICE)  # [1, 30, 74]
         
         # 單 Fold 推理
         pred_label, confidence, all_logits = single_fold_predict(features_tensor)

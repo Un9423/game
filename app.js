@@ -311,7 +311,7 @@ const PREDICTION_BUFFER_SIZE = 5;   // 隊友規格：紀錄最近 5 次預測
 const STABLE_COUNT = 4;             // 隊友規格：5 次中至少 4 次一致
 const CONFIDENCE_THRESHOLD = 0.75;  // 隊友規格：原始 logit 門檻
 const MODEL_FRAMES = 30;
-const FEATURE_DIM = 66;             // 新模型：66 維 (左手33 + 右手33)
+const FEATURE_DIM = 74;             // 新模型：74 維 (左手37 + 右手37)
 let modelLoaded = false;
 
 // Debug: 儲存最近一次推論的完整結果供畫面顯示
@@ -416,11 +416,11 @@ async function initModel() {
  * @returns {number} 能量值
  */
 function computeFrameEnergy(frame) {
-  if (!frame || frame.length !== 66) return 0;
+  if (!frame || frame.length !== 74) return 0;
   
   let lh_pts, rh_pts;
   
-  // 新模型：66 維 (左手 33 + 右手 33)，只有 11 個關鍵點
+  // 新模型：74 維 [左手座標33 + 左手幾何4 + 右手座標33 + 右手幾何4]
   lh_pts = [];
   for (let i = 0; i < 11; i++) {
     lh_pts.push([frame[i*3], frame[i*3+1], frame[i*3+2]]);
@@ -428,7 +428,7 @@ function computeFrameEnergy(frame) {
   
   rh_pts = [];
   for (let i = 0; i < 11; i++) {
-    rh_pts.push([frame[33 + i*3], frame[33 + i*3+1], frame[33 + i*3+2]]);
+    rh_pts.push([frame[37 + i*3], frame[37 + i*3+1], frame[37 + i*3+2]]);
   }
   
   // 計算兩手重心
@@ -915,8 +915,8 @@ function updateDynamicGesture(results) {
   handWasPresent = true;
   
   // 改為使用新的 66 維特徵提取
-  if (typeof extractFrame66 === 'function') {
-      const frame = extractFrame66(results);
+  if (typeof extractFrame74 === 'function') {
+      const frame = extractFrame74(results);
       
       // 诊断：检查特征是否全为0或其他异常值
       const nonZeroCount = frame.filter(v => Math.abs(v) > 1e-6).length;
@@ -936,7 +936,7 @@ function updateDynamicGesture(results) {
         }
       }
   } else {
-      console.error("特徵提取失敗：extractFrame66 找不到");
+      console.error("特徵提取失敗：extractFrame74 找不到");
   }
 }
 
